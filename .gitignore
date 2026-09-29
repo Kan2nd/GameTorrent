@@ -1,0 +1,12 @@
+node_modules/
+downloads/
+roms/**/*
+!roms/.gitkeep
+webui/data/*
+!webui/data/.gitkeep
+.scratch/
+credentials.md
+cicd/gitops/compose.env
+*.log
+.DS_Store
+apps/desktop/src-tauri/target/

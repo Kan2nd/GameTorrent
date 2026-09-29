@@ -1,0 +1,7 @@
+.git
+node_modules
+downloads
+roms
+cicd/node_modules
+docs
+poc/node_modules

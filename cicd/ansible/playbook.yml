@@ -1,0 +1,11 @@
+---
+# ansible/playbook.yml
+# Run: ansible-playbook -i inventory/hosts.ini playbook.yml
+# Requires: ansible >= 2.14, passwordless SSH to each host,
+#           sudo without password (NOPASSWD in sudoers or -K flag)
+
+- name: Install Docker Engine + Compose on every target host
+  hosts: docker_hosts
+  become: true
+  roles:
+    - common

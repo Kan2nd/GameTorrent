@@ -1,0 +1,25 @@
+# Deploy target for the built-and-scanned image (replaces the earlier
+# k8s-manifests/ Deployment+Service — this project is Docker-only now).
+#
+# gametorrent-poc is a CLI tool, not a long-running server, so this is
+# defined as a `run`-style service (no `restart: always`, no ports) rather
+# than something that stays up on its own. On the target host:
+#
+#   docker compose -f cicd/deploy/docker-compose.yml pull
+#   docker compose -f cicd/deploy/docker-compose.yml run --rm gametorrent-poc --game tobu-tobu-girl --launch
+#
+# REGISTRY/IMAGE_TAG below are filled in by CI at deploy time (see the
+# `deploy:docker-compose` job in cicd/.gitlab-ci.yml).
+
+services:
+  gametorrent-poc:
+    image: "${REGISTRY:-REGISTRY}/gametorrent-poc:${IMAGE_TAG:-latest}"
+    volumes:
+      - roms:/app/roms
+      - downloads:/app/downloads
+    environment:
+      - VT_API_KEY=${VT_API_KEY:-}
+
+volumes:
+  roms:
+  downloads:

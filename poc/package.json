@@ -1,0 +1,15 @@
+{
+  "name": "gametorrent-poc",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Phase 1 proof-of-concept: magnet -> selective download -> extract -> verify -> launch emulator.",
+  "type": "commonjs",
+  "main": "poc.js",
+  "scripts": {
+    "start": "node poc.js"
+  },
+  "dependencies": {
+    "extract-zip": "^2.0.0",
+    "webtorrent": "^1.0.0"
+  }
+}

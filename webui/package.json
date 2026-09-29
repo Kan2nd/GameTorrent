@@ -1,0 +1,16 @@
+{
+  "name": "gametorrent-webui",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Web dashboard for GameTorrent: browse the catalog, start downloads, watch progress, manage feeds, launch emulators.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.0",
+    "express-session": "^1.18.0",
+    "ajv": "^8.12.0",
+    "ajv-formats": "^2.1.1"
+  }
+}

@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GameTorrent</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<link rel="preload" href="/fonts/PressStart2P-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="/fonts/VT323-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="logo" href="/" aria-label="GameTorrent home">
+      <span class="sprite" data-sprite="cartLogo"></span>
+      <span class="logo-text">GAME<span>TORRENT</span></span>
+    </a>
+    <nav class="tabs">
+      <button class="tab-btn active" data-tab="library"><span class="sprite" data-sprite="cart"></span>Library</button>
+      <button class="tab-btn" data-tab="downloads"><span class="sprite" data-sprite="download"></span>Downloads</button>
+      <button class="tab-btn" data-tab="search"><span class="sprite" data-sprite="search"></span>Search</button>
+      <button class="tab-btn" data-tab="feeds"><span class="sprite" data-sprite="list"></span>Feeds</button>
+      <button class="tab-btn" data-tab="emulators"><span class="sprite" data-sprite="pad"></span>Emulators</button>
+    </nav>
+    <button id="logoutBtn" class="ghost-btn"><span class="sprite" data-sprite="lock"></span>Sign out</button>
+  </header>
+
+  <main>
+    <section id="tab-library" class="tab-panel active">
+      <div class="section-header">
+        <p class="muted">Browse the default catalog and your feeds, or add your own magnet/URL directly.</p>
+        <button id="customDownloadBtn">+ Add custom download</button>
+      </div>
+      <div id="feedWarnings" class="warning-banner" hidden></div>
+
+      <div id="installedSection" hidden>
+        <h3>Installed</h3>
+        <div id="installedGrid" class="game-grid"></div>
+      </div>
+      <h3 id="catalogHeading" hidden>Catalog</h3>
+      <div id="gameGrid" class="game-grid"></div>
+      <div id="libraryEmpty" class="empty-state" hidden>
+        <span class="sprite sprite-xl" data-sprite="invader"></span>
+        <p>No cartridges yet — find a game in the Search tab and hit Download, and it will show up under Installed.</p>
+      </div>
+    </section>
+
+    <section id="tab-downloads" class="tab-panel">
+      <div class="section-header">
+        <p class="muted">Deleting an entry only removes its log — downloaded games stay in your library.</p>
+        <button id="clearFinishedBtn" class="ghost-btn">Clear finished</button>
+      </div>
+      <div id="downloadList" class="download-list"></div>
+    </section>
+
+    <section id="tab-search" class="tab-panel">
+      <div class="section-header">
+        <p class="muted">Search torrent indexers through a Jackett instance you run and configure yourself — GameTorrent doesn't ship or scrape any indexer directly.</p>
+      </div>
+
+      <h3>Providers</h3>
+      <form id="addProviderForm" class="inline-form">
+        <input type="text" id="providerName" placeholder="Name (e.g. My Jackett)" required>
+        <input type="url" id="providerBaseUrl" placeholder="http://192.168.1.10:9117" required>
+        <input type="password" id="providerApiKey" placeholder="Jackett API key" required>
+        <button type="submit">Add provider</button>
+      </form>
+      <p id="providerError" class="error" hidden></p>
+      <ul id="providerList" class="feed-list"></ul>
+
+      <h3>Search</h3>
+      <form id="searchForm" class="inline-form">
+        <select id="searchProviderSelect"><option value="">All providers</option></select>
+        <input type="text" id="searchQuery" placeholder="Game title..." required>
+        <button type="submit">Search</button>
+        <button type="button" id="searchBackBtn" class="ghost-btn" hidden>Back to browsing</button>
+      </form>
+      <div class="filter-bar" id="fileFilterBar">
+        <span class="muted">Skip these file types when downloading (untick all to keep everything):</span>
+        <label><input type="checkbox" data-skip="video"> Video</label>
+        <label><input type="checkbox" data-skip="audio"> Audio</label>
+        <label><input type="checkbox" data-skip="images"> Images</label>
+        <label><input type="checkbox" data-skip="docs"> Text / docs</label>
+      </div>
+      <div id="platformChips" class="chip-row" hidden></div>
+      <p id="searchError" class="error" hidden></p>
+      <p id="searchWarnings" class="warning-banner" hidden></p>
+      <p id="searchEmpty" class="muted" hidden>No results.</p>
+      <div class="table-scroll">
+        <table id="searchResultsTable" class="data-table" hidden>
+        <thead><tr><th>Title</th><th>Console</th><th>Indexer</th><th>Size</th><th>Seeders</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table>
+      </div>
+
+      <div id="discoverEmpty" class="muted" hidden>No providers have enough results to preview yet — add a provider above, or a provider needs at least 5 available torrents before it shows up here.</div>
+      <div id="discoverSections"></div>
+    </section>
+
+    <section id="tab-feeds" class="tab-panel">
+      <form id="addFeedForm" class="inline-form">
+        <input type="url" id="feedUrl" placeholder="https://example.org/feed.json" required>
+        <button type="submit">Add feed</button>
+      </form>
+      <p id="feedError" class="error" hidden></p>
+      <ul id="feedList" class="feed-list"></ul>
+    </section>
+
+    <section id="tab-emulators" class="tab-panel">
+      <p class="muted">Configured in <code>config/emulators.json</code>. Read-only here.</p>
+      <div class="table-scroll">
+        <table id="emulatorTable" class="data-table">
+        <thead><tr><th>Platform</th><th>Name</th><th>Executable</th><th>Args template</th></tr></thead>
+        <tbody></tbody>
+      </table>
+      </div>
+    </section>
+  </main>
+
+  <div id="downloadModal" class="modal" hidden>
+    <div class="modal-content">
+      <h2 id="modalTitle">Start download</h2>
+      <div id="modalDefaultOptions">
+        <label><input type="checkbox" id="optSkipScan"> Skip ClamAV scan</label>
+        <label><input type="checkbox" id="optNoVt"> Skip VirusTotal lookup</label>
+        <label id="optLaunchRow"><input type="checkbox" id="optLaunch"> Launch emulator when done</label>
+      </div>
+      <div class="modal-actions">
+        <button id="modalCancel" class="ghost-btn">Cancel</button>
+        <button id="modalConfirm">Start</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="customDownloadModal" class="modal" hidden>
+    <form id="customDownloadForm" class="modal-content modal-content-wide">
+      <h2>Add custom download</h2>
+      <p class="muted">Just fetches and verifies the file — no emulator setup needed here.</p>
+
+      <label>Source
+        <select id="customSourceType">
+          <option value="magnet">Magnet URI</option>
+          <option value="directUrl">Direct download URL</option>
+        </select>
+      </label>
+      <label id="customMagnetRow">Magnet URI
+        <input type="text" id="customMagnetUri" placeholder="magnet:?xt=urn:btih:...">
+      </label>
+      <label id="customUrlRow" hidden>Direct URL
+        <input type="url" id="customDirectUrl" placeholder="https://example.org/game.zip">
+      </label>
+
+      <label>What kind of ROM is this?
+        <select id="customPlatform"></select>
+      </label>
+      <label>Save as (folder name)
+        <input type="text" id="customDest" placeholder="my-download" required>
+      </label>
+      <label>File to use after download/extraction (optional)
+        <input type="text" id="customRomFile" placeholder="Leave blank to auto-detect by platform">
+      </label>
+      <label>Select only files matching (optional, magnet only)
+        <input type="text" id="customSelect" placeholder="*.gba">
+      </label>
+      <label>Archive format
+        <select id="customArchive">
+          <option value="auto">Auto-detect (recommended)</option>
+          <option value="none">None (already the final file)</option>
+          <option value="zip">Zip</option>
+        </select>
+      </label>
+
+      <label><input type="checkbox" id="customSkipScan"> Skip ClamAV scan</label>
+      <label><input type="checkbox" id="customNoVt"> Skip VirusTotal lookup</label>
+
+      <p id="customDownloadError" class="error" hidden></p>
+      <div class="modal-actions">
+        <button type="button" id="customDownloadCancel" class="ghost-btn">Cancel</button>
+        <button type="submit">Start</button>
+      </div>
+    </form>
+  </div>
+
+  <div id="confirmModal" class="modal" hidden>
+    <div class="modal-content">
+      <h2 id="confirmModalTitle">Confirm</h2>
+      <p id="confirmModalText" class="muted" style="margin: 16px 0;"></p>
+      <div class="modal-actions">
+        <button id="confirmModalCancel" class="ghost-btn">Cancel</button>
+        <button id="confirmModalOk" class="danger-btn">Delete</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/sprites.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,137 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://example.org/gametorrent/catalog.schema.json",
+  "title": "GameTorrent Catalog",
+  "description": "Schema for catalog.json / remote feed.json files consumed by the GameTorrent launcher. A catalog is a list of games plus source/extraction/launch metadata; it contains no application logic.",
+  "type": "object",
+  "required": ["catalogVersion", "name", "games"],
+  "additionalProperties": false,
+  "properties": {
+    "catalogVersion": {
+      "type": "string",
+      "description": "Schema version this file was authored against, e.g. \"1.0.0\".",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$"
+    },
+    "name": { "type": "string", "description": "Display name of this catalog/feed." },
+    "description": { "type": "string" },
+    "maintainer": { "type": "string", "description": "Person/org responsible for this feed's content." },
+    "homepage": { "type": "string", "format": "uri" },
+    "updated": { "type": "string", "format": "date", "description": "Last-updated date, ISO 8601." },
+    "_note": { "type": "string", "description": "Free-text maintainer note (JSON has no comments); not consumed by the app." },
+    "games": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/game" }
+    }
+  },
+  "definitions": {
+    "game": {
+      "type": "object",
+      "required": ["id", "title", "platform", "license", "source", "launch", "coverImage"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Stable unique identifier, e.g. \"tobu-tobu-girl\".",
+          "pattern": "^[a-z0-9][a-z0-9-]*$"
+        },
+        "title": { "type": "string" },
+        "platform": {
+          "type": "string",
+          "description": "Target system key; must match a key in config/emulators.json.",
+          "enum": ["nes", "snes", "gb", "gbc", "gba", "nds", "3ds", "n64", "gamecube", "genesis", "saturn", "dreamcast", "psx", "psp", "dos", "pc", "switch"]
+        },
+        "genre": { "type": "array", "items": { "type": "string" } },
+        "description": { "type": "string" },
+        "coverImage": { "type": "string", "format": "uri" },
+        "license": {
+          "type": "string",
+          "description": "License/rights statement, e.g. \"CC-BY-4.0\", \"Public Domain\", \"Freeware\", \"MIT\".",
+          "minLength": 1
+        },
+        "author": { "type": "string", "description": "Original game author/studio, for attribution." },
+        "homepage": { "type": "string", "format": "uri" },
+
+        "source": {
+          "type": "object",
+          "description": "Where to fetch the game payload from.",
+          "required": ["type"],
+          "oneOf": [
+            {
+              "properties": { "type": { "const": "magnet" }, "magnetUri": { "type": "string", "pattern": "^magnet:\\?" } },
+              "required": ["magnetUri"]
+            },
+            {
+              "properties": { "type": { "const": "torrentFile" }, "torrentUrl": { "type": "string", "format": "uri" } },
+              "required": ["torrentUrl"]
+            },
+            {
+              "properties": { "type": { "const": "directUrl" }, "directUrl": { "type": "string", "format": "uri" } },
+              "required": ["directUrl"]
+            }
+          ],
+          "properties": {
+            "type": { "type": "string", "enum": ["magnet", "torrentFile", "directUrl"] },
+            "magnetUri": { "type": "string" },
+            "torrentUrl": { "type": "string" },
+            "directUrl": { "type": "string" },
+            "selectFiles": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "Glob patterns matched against in-torrent file paths for selective download; omit to download all files in the torrent."
+            }
+          }
+        },
+
+        "extraction": {
+          "type": "object",
+          "description": "How to unpack the downloaded payload. Omit entirely if the downloaded file is already launchable (e.g. a bare .sfc/.gba ROM).",
+          "additionalProperties": false,
+          "properties": {
+            "archiveFormat": { "type": "string", "enum": ["zip", "7z", "rar", "none"] },
+            "innerPath": {
+              "type": "string",
+              "description": "Path/glob within the archive to extract, if not the whole archive."
+            },
+            "destSubfolder": {
+              "type": "string",
+              "description": "Subfolder appended to ./roms/<platform>/ for this game's extracted files."
+            }
+          }
+        },
+
+        "verification": {
+          "type": "object",
+          "description": "Optional integrity check run on the final extracted ROM file before launch.",
+          "required": ["algorithm", "hash"],
+          "additionalProperties": false,
+          "properties": {
+            "algorithm": { "type": "string", "enum": ["sha256", "sha1", "md5", "crc32"] },
+            "hash": { "type": "string" }
+          }
+        },
+
+        "launch": {
+          "type": "object",
+          "description": "How to invoke the emulator for this game. emulatorId is optional — omit it for a game with no configured emulator (it'll still download/extract/verify, just skip the auto-launch step).",
+          "required": ["romFile"],
+          "additionalProperties": false,
+          "properties": {
+            "emulatorId": {
+              "type": "string",
+              "description": "Key into config/emulators.json describing the CLI template to use."
+            },
+            "romFile": {
+              "type": "string",
+              "description": "Path (relative to the game's roms/<platform>/ destination) of the file to pass to the emulator."
+            },
+            "extraArgs": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "Extra CLI args appended after the emulator's own template args, e.g. save-state slot."
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,38 @@
+# Compose equivalent of the manual `docker run` command this was deployed
+# with (see credentials.md) — same container name, ports, and volume names,
+# so taking this over from Komodo (or running it by hand) doesn't lose
+# existing download history / feeds / roms. See docs/GITOPS.md.
+#
+# Manual use: create a `.env` file next to this one (gitignored) with
+# WEBUI_USER, WEBUI_PASSWORD, SESSION_SECRET, then `docker compose up -d --build`.
+# Komodo/GitOps use: cicd/gitops/stacks.toml points here; the same variables
+# come from Komodo's own Variables store instead of a local .env file.
+
+services:
+  gametorrent-webui:
+    build:
+      context: ..
+      dockerfile: webui/Dockerfile
+    image: gametorrent-webui:local
+    container_name: gametorrent-webui
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      WEBUI_USER: ${WEBUI_USER}
+      WEBUI_PASSWORD: ${WEBUI_PASSWORD}
+      SESSION_SECRET: ${SESSION_SECRET}
+      VT_API_KEY: ${VT_API_KEY:-}
+      RAWG_API_KEY: ${RAWG_API_KEY:-}
+    volumes:
+      - gametorrent-webui-data:/app/webui/data
+      - gametorrent-downloads:/app/downloads
+      - gametorrent-roms:/app/roms
+
+volumes:
+  gametorrent-webui-data:
+    external: true
+  gametorrent-downloads:
+    external: true
+  gametorrent-roms:
+    external: true

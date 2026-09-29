@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GameTorrent — Sign in</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<link rel="preload" href="/fonts/PressStart2P-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="/fonts/VT323-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body class="login-body">
+  <form id="loginForm" class="login-card">
+    <div class="login-logo">
+      <span class="sprite" data-sprite="cartLogo"></span>
+      <h1 class="logo-text">GAME<span>TORRENT</span></h1>
+    </div>
+    <p class="muted blink-line">PLAYER 1 — INSERT CREDENTIALS</p>
+    <label>Username
+      <input type="text" id="username" autocomplete="username" required autofocus>
+    </label>
+    <label>Password
+      <input type="password" id="password" autocomplete="current-password" required>
+    </label>
+    <button type="submit"><span class="sprite" data-sprite="play"></span>Sign in</button>
+    <p id="loginError" class="error" hidden></p>
+  </form>
+
+  <script src="/sprites.js"></script>
+  <script>
+    const form = document.getElementById('loginForm');
+    const errorEl = document.getElementById('loginError');
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      errorEl.hidden = true;
+      const username = document.getElementById('username').value;
+      const password = document.getElementById('password').value;
+
+      const res = await fetch('/api/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password }),
+      });
+
+      if (res.ok) {
+        window.location.href = '/';
+      } else {
+        const data = await res.json().catch(() => ({}));
+        errorEl.textContent = data.error || 'Sign in failed';
+        errorEl.hidden = false;
+      }
+    });
+  </script>
+</body>
+</html>

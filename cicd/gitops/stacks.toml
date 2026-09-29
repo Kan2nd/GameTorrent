@@ -1,0 +1,55 @@
+# Komodo Resource Sync target — Komodo Core polls this file (once you've
+# pointed a Resource Sync at it, one-time setup via Komodo's UI — see
+# docs/GITOPS.md) and creates/updates the resources declared below to
+# match. This is the actual "GitOps" part: this file, not a UI click, is
+# the source of truth for how gametorrent-webui is deployed.
+#
+# Secrets are NOT here. `[[NAME]]` interpolates a Komodo "Variable" (set
+# once via Settings > Variables in Komodo's UI, marked secret) at deploy
+# time — the real values never touch this repo.
+
+[[stack]]
+name = "gametorrent-webui"
+description = "GameTorrent web dashboard — deployed from webui/docker-compose.yml"
+tags = ["gametorrent"]
+
+[stack.config]
+# Must match KOMODO_FIRST_SERVER_NAME in cicd/gitops/compose.env.
+server = "kan2server"
+
+# Where Komodo clones this repo from. git_account must reference a Git
+# Account added under Komodo Settings > Git Providers — for GitLab, the
+# account's username must literally be "oauth2" (GitLab's HTTPS token-auth
+# convention), not your real GitLab username, paired with a PAT as the token.
+git_provider = "gitlab.com"
+git_account = "oauth2"
+repo = "kannguyen3105/gametorrent"
+branch = "main"
+
+run_directory = "webui"
+file_paths = ["docker-compose.yml"]
+
+# Required: this project has no image registry, only a local `build:`
+# context in webui/docker-compose.yml. Komodo defaults to `docker compose
+# pull` (assumes a registry image) — without both of these it fails with
+# "repository does not exist" even though the build itself succeeds.
+run_build = true
+auto_pull = false
+
+# A GitLab webhook is live (via a Cloudflare tunnel — see docs/GITOPS.md)
+# pointed at /listener/gitlab/stack/gametorrent-webui/deploy.
+# webhook_force_deploy MUST be true: the default webhook behavior runs
+# DeployStackIfChanged, which compares a *cached* latest_hash and can
+# silently no-op on stale data (real bug hit and documented in
+# docs/GITOPS.md) — force_deploy makes every webhook call an
+# unconditional plain deploy instead, sidestepping that entirely.
+webhook_force_deploy = true
+poll_for_updates = false
+auto_update = false
+
+environment = """
+WEBUI_USER = [[WEBUI_USER]]
+WEBUI_PASSWORD = [[WEBUI_PASSWORD]]
+SESSION_SECRET = [[SESSION_SECRET]]
+VT_API_KEY = [[VT_API_KEY]]
+"""

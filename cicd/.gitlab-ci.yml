@@ -1,0 +1,196 @@
+# GameTorrent CI/CD
+#
+# This file lives in cicd/ rather than the repo root — on GitLab you must
+# point the project at it under Settings > CI/CD > General pipelines >
+# "CI/CD configuration file" = cicd/.gitlab-ci.yml (see docs/CI_CD.md).
+# Jobs still run with the repo root as their working directory regardless
+# of where this file lives, so paths below are root-relative.
+#
+# Branch model this pipeline assumes (see docs/CI_CD.md):
+#   feature/*  -> no pipeline on raw push; only engages via an MR into dev
+#   dev        -> integration branch, full validate+build(+security) on every push/MR
+#   main       -> release branch, adds deploy (gated manual)
+#
+# ── Security gates (merged in from the former standalone devsecops-pipeline
+# project) ────────────────────────────────────────────────────────────────
+# sast/dependency-scan/build-image/image-scan came from a separate repo that
+# used to keep its own copy of this code under app/ just to scan it. Now
+# that it's the same repo, those jobs point straight at poc/ — no more copy
+# to keep in sync. See docs/devsecops-notes/ for that project's original
+# history (DVWA target, Kubernetes deploy) — both dropped; this app is a
+# CLI tool (no DAST target) and the deploy target is plain Docker, not k8s.
+#
+# ── CURRENTLY RUNNING: validate + build only ────────────────────────────────
+# semgrep-sast is active; dependency-scan/build-image/image-scan/the docker
+# deploy are hidden (leading "."). Delete the leading "." to enable, in this
+# order: .trivy-dependency-scan -> .build-image -> .trivy-image-scan.
+# image-scan needs build-image's image.tar. Security gates are report-only
+# (allow_failure: true) until triaged — flip the `# GATE:` lines to enforce.
+
+workflow:
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH == "dev"'
+    - if: '$CI_COMMIT_BRANCH == "main"'
+
+default:
+  image: node:20
+  cache:
+    key:
+      files:
+        - cicd/package-lock.json
+    paths:
+      - cicd/node_modules/
+
+variables:
+  APP_DIR: "poc"                          # the actual Node.js code — see docs/POC.md
+  IMAGE_NAME: "gametorrent-poc"
+  IMAGE_TAG: "$CI_COMMIT_SHORT_SHA"
+
+stages:
+  - validate
+  - sast
+  - dependency-scan
+  - build
+  - image-scan
+  - deploy
+
+# ── validate ─────────────────────────────────────────────────────────────────
+
+validate:catalog:
+  stage: validate
+  script:
+    - cd cicd
+    - npm ci
+    - npm run validate:catalog
+
+validate:poc-syntax:
+  stage: validate
+  script:
+    - node --check poc/poc.js
+
+# ── Gate 1 — SAST ────────────────────────────────────────────────────────────
+semgrep-sast:
+  stage: sast
+  image: semgrep/semgrep:latest
+  script:
+    - mkdir -p reports
+    - >
+      semgrep scan
+      --config p/owasp-top-ten
+      --config p/javascript
+      --config p/ci
+      --severity ERROR
+      --error
+      --sarif --output reports/semgrep.sarif
+      "$APP_DIR"
+  artifacts:
+    when: always
+    paths:
+      - reports/semgrep.sarif
+    expire_in: 1 week
+  allow_failure: true    # GATE: set to false once triaged
+
+# ── Gate 2 — dependency scan ─────────────────────────────────────────────────
+# poc/package-lock.json pins webtorrent + extract-zip — see docs/POC.md's
+# security note on extract-zip's unpatched symlink path-traversal advisory;
+# this gate is exactly what should keep catching that until it's fixed upstream.
+.trivy-dependency-scan:            # DISABLED — remove the leading dot to enable
+  stage: dependency-scan
+  image:
+    name: aquasec/trivy:latest
+    entrypoint: [""]
+  script:
+    - mkdir -p reports
+    - >
+      trivy fs
+      --severity HIGH,CRITICAL
+      --exit-code 1
+      --format json --output reports/trivy-fs.json
+      "$APP_DIR"
+  artifacts:
+    when: always
+    paths:
+      - reports/trivy-fs.json
+    expire_in: 1 week
+  allow_failure: true    # GATE: set to false once triaged
+
+# ── build ────────────────────────────────────────────────────────────────────
+build:poc:
+  stage: build
+  script:
+    - cd poc
+    - npm ci
+
+# Uses the repo-root Dockerfile (node:20-alpine base). Saved as a tarball so
+# later jobs scan the exact same bytes instead of rebuilding.
+.build-image:                      # DISABLED — remove the leading dot to enable
+  stage: build
+  image: docker:24.0
+  services:
+    - docker:24.0-dind
+  variables:
+    DOCKER_TLS_CERTDIR: "/certs"
+    DOCKER_HOST: "tcp://docker:2376"
+    DOCKER_TLS_VERIFY: "1"
+    DOCKER_CERT_PATH: "/certs/client"
+  script:
+    - docker build -t "$IMAGE_NAME:$IMAGE_TAG" .
+    - docker save "$IMAGE_NAME:$IMAGE_TAG" -o image.tar
+  artifacts:
+    paths:
+      - image.tar
+    expire_in: 1 hour
+
+# ── Gate 3 — image scan ──────────────────────────────────────────────────────
+.trivy-image-scan:                 # DISABLED — needs .build-image enabled first
+  stage: image-scan
+  image:
+    name: aquasec/trivy:latest
+    entrypoint: [""]
+  script:
+    - mkdir -p reports
+    - >
+      trivy image
+      --input image.tar
+      --severity HIGH,CRITICAL
+      --exit-code 1
+      --format json --output reports/trivy-image.json
+  artifacts:
+    when: always
+    paths:
+      - reports/trivy-image.json
+    expire_in: 1 week
+  allow_failure: true    # GATE: set to false once triaged
+
+# ── deploy ───────────────────────────────────────────────────────────────────
+deploy:tauri-placeholder:
+  stage: deploy
+  script:
+    - echo "Nothing to deploy yet — Phase 2 (apps/desktop, Tauri) will build installers here (tauri build) and publish a GitLab Release."
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      when: manual
+
+# Deploys the scanned-and-built poc CLI image to a plain Docker host (see
+# cicd/ansible/ + cicd/deploy/docker-compose.yml — no Kubernetes). This is
+# NOT how gametorrent-webui gets deployed — that's now Komodo/GitOps, see
+# docs/GITOPS.md. DISABLED until these CI/CD variables exist: SSH_PRIVATE_KEY
+# (masked, file type), DEPLOY_HOST, DEPLOY_USER, REGISTRY (build-image only
+# saves a local tarball today — nothing pushes it to a registry yet).
+.deploy:docker-compose:            # DISABLED — needs a registry push + CI variables first
+  stage: deploy
+  image: alpine:latest
+  script:
+    - apk add --no-cache openssh-client
+    - eval $(ssh-agent -s)
+    - echo "$SSH_PRIVATE_KEY" | ssh-add -
+    - mkdir -p ~/.ssh && ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+    - scp cicd/deploy/docker-compose.yml "$DEPLOY_USER@$DEPLOY_HOST:~/gametorrent-poc-compose.yml"
+    - >
+      ssh "$DEPLOY_USER@$DEPLOY_HOST"
+      "REGISTRY=$REGISTRY IMAGE_TAG=$IMAGE_TAG VT_API_KEY=$VT_API_KEY
+      docker compose -f ~/gametorrent-poc-compose.yml pull"
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      when: manual

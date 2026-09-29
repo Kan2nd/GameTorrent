@@ -1,0 +1,83 @@
+#####################################################################
+# Komodo bootstrap — FerretDB (Postgres) + Core + Periphery, one host #
+#####################################################################
+#
+# This deploys Komodo itself (the GitOps controller), not GameTorrent.
+# It's a one-time manual step on kan2server — see docs/GITOPS.md. Once
+# it's up, Komodo takes over deploying webui/docker-compose.yml from
+# this repo via cicd/gitops/stacks.toml.
+#
+# Uses FerretDB (Postgres-backed, MongoDB-wire-compatible), not MongoDB
+# directly — plain `mongo` refused to start on kan2server's kernel
+# (7.0.0): "Linux kernel versions 6.19 and newer has a known
+# incompatibility with this version of MongoDB" (SERVER-121912). Komodo's
+# own docs anticipate exactly this and offer FerretDB as the alternative.
+#
+# Verbatim from the official Komodo quickstart
+# (https://github.com/moghtech/komodo/blob/main/compose/ferretdb.compose.yaml,
+# fetched 2026-09).
+#
+# Usage on kan2server:
+#   cp compose.env.example compose.env   # then fill in real values — never commit compose.env
+#   docker compose -p komodo -f compose.yaml --env-file compose.env up -d
+
+services:
+  postgres:
+    # Pin to a specific version in production — updates can be breaking.
+    image: ghcr.io/ferretdb/postgres-documentdb
+    labels:
+      komodo.skip: # Prevent Komodo from stopping this via StopAllContainers
+    restart: unless-stopped
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    environment:
+      POSTGRES_USER: ${KOMODO_DATABASE_USERNAME}
+      POSTGRES_PASSWORD: ${KOMODO_DATABASE_PASSWORD}
+      POSTGRES_DB: postgres
+
+  ferretdb:
+    image: ghcr.io/ferretdb/ferretdb
+    labels:
+      komodo.skip:
+    restart: unless-stopped
+    depends_on:
+      - postgres
+    volumes:
+      - ferretdb-state:/state
+    environment:
+      FERRETDB_POSTGRESQL_URL: postgres://${KOMODO_DATABASE_USERNAME}:${KOMODO_DATABASE_PASSWORD}@postgres:5432/postgres
+
+  core:
+    image: ghcr.io/moghtech/komodo-core:${COMPOSE_KOMODO_IMAGE_TAG:-2}
+    init: true
+    restart: unless-stopped
+    depends_on:
+      - ferretdb
+    ports:
+      - 9120:9120
+    env_file: ./compose.env
+    environment:
+      KOMODO_DATABASE_ADDRESS: ferretdb:27017
+    volumes:
+      - keys:/config/keys
+      - ${COMPOSE_KOMODO_BACKUPS_PATH}:/backups
+
+  periphery:
+    image: ghcr.io/moghtech/komodo-periphery:${COMPOSE_KOMODO_IMAGE_TAG:-2}
+    init: true
+    restart: unless-stopped
+    depends_on:
+      - core
+    env_file: ./compose.env
+    volumes:
+      - keys:/config/keys
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /proc:/proc
+      # GameTorrent's clone must live inside this same path on the host —
+      # see PERIPHERY_ROOT_DIRECTORY in compose.env.example.
+      - ${PERIPHERY_ROOT_DIRECTORY:-/etc/komodo}:${PERIPHERY_ROOT_DIRECTORY:-/etc/komodo}
+
+volumes:
+  postgres-data:
+  ferretdb-state:
+  keys:

@@ -1,0 +1,9 @@
+{
+  "catalogVersion": "1.0.0",
+  "name": "GameTorrent Default Homebrew Catalog",
+  "description": "Curated, 100% legal freeware/open-source homebrew games bundled by default with GameTorrent.",
+  "maintainer": "GameTorrent project",
+  "updated": "2026-09-19",
+  "_note": "Intentionally empty as of 2026-09-19: the bundled tobu-tobu-girl and super-haxagon entries (both verified working, hash-pinned free homebrew) were removed at the maintainer's request. Restore them from git history (commit before this one) if wanted. bobl and anguna were pulled 2026-09-17 (placeholder example.org sources; neither is torrent-distributed by its author) — bobl: https://morphcatgames.itch.io/bobl (itch.io download-flow); anguna: tolberts.net failed a TLS check and is likely dead. Games come from the Search tab (Jackett) and user feeds instead.",
+  "games": []
+}

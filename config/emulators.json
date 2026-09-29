@@ -1,0 +1,84 @@
+{
+  "_comment": "Per-platform emulator CLI launch templates. {romPath} is substituted with the absolute path to the launchable file resolved from catalog.json's launch.romFile. Adjust 'executable' to an absolute path if the binary isn't on PATH.",
+
+  "nes": {
+    "name": "RetroArch + FCEUmm",
+    "executable": "retroarch",
+    "argsTemplate": ["-L", "cores/fceumm_libretro.dll", "{romPath}"]
+  },
+  "snes": {
+    "name": "RetroArch + Snes9x",
+    "executable": "retroarch",
+    "argsTemplate": ["-L", "cores/snes9x_libretro.dll", "{romPath}"]
+  },
+  "gb": {
+    "name": "RetroArch + Gambatte",
+    "executable": "retroarch",
+    "argsTemplate": ["-L", "cores/gambatte_libretro.dll", "{romPath}"]
+  },
+  "gbc": {
+    "name": "RetroArch + Gambatte",
+    "executable": "retroarch",
+    "argsTemplate": ["-L", "cores/gambatte_libretro.dll", "{romPath}"]
+  },
+  "gba": {
+    "name": "RetroArch + mGBA",
+    "executable": "retroarch",
+    "argsTemplate": ["-L", "cores/mgba_libretro.dll", "{romPath}"]
+  },
+  "n64": {
+    "name": "RetroArch + Mupen64Plus",
+    "executable": "retroarch",
+    "argsTemplate": ["-L", "cores/mupen64plus_next_libretro.dll", "{romPath}"]
+  },
+  "genesis": {
+    "name": "RetroArch + Genesis Plus GX",
+    "executable": "retroarch",
+    "argsTemplate": ["-L", "cores/genesis_plus_gx_libretro.dll", "{romPath}"]
+  },
+  "psx": {
+    "name": "RetroArch + Beetle PSX",
+    "executable": "retroarch",
+    "argsTemplate": ["-L", "cores/mednafen_psx_libretro.dll", "{romPath}"]
+  },
+  "nds": {
+    "name": "RetroArch + melonDS",
+    "executable": "retroarch",
+    "argsTemplate": ["-L", "cores/melonds_libretro.dll", "{romPath}"]
+  },
+  "3ds": {
+    "name": "Citra/Azahar (standalone) — adjust executable to whichever fork you have installed",
+    "executable": "azahar",
+    "argsTemplate": ["{romPath}"]
+  },
+  "gamecube": {
+    "name": "Dolphin (standalone)",
+    "executable": "dolphin-emu",
+    "argsTemplate": ["-b", "-e", "{romPath}"]
+  },
+  "saturn": {
+    "name": "RetroArch + Beetle Saturn",
+    "executable": "retroarch",
+    "argsTemplate": ["-L", "cores/mednafen_saturn_libretro.dll", "{romPath}"]
+  },
+  "dreamcast": {
+    "name": "RetroArch + Flycast",
+    "executable": "retroarch",
+    "argsTemplate": ["-L", "cores/flycast_libretro.dll", "{romPath}"]
+  },
+  "psp": {
+    "name": "PPSSPP (standalone)",
+    "executable": "PPSSPPSDL",
+    "argsTemplate": ["{romPath}"]
+  },
+  "dos": {
+    "name": "DOSBox",
+    "executable": "dosbox",
+    "argsTemplate": ["{romPath}", "-fullscreen", "-exit"]
+  },
+  "pc": {
+    "name": "Direct executable launch",
+    "executable": "{romPath}",
+    "argsTemplate": []
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "name": "gametorrent-ci-tooling",
+  "version": "1.0.0",
+  "private": true,
+  "description": "CI/CD tooling (catalog schema validation, etc.) for GameTorrent. Kept separate from app code in poc/ and (later) apps/desktop/.",
+  "scripts": {
+    "validate:catalog": "node scripts/validate-catalog.js",
+    "lookup:art": "node scripts/lookup-art.js"
+  },
+  "devDependencies": {
+    "ajv": "^8.17.1",
+    "ajv-formats": "^3.0.1"
+  }
+}
