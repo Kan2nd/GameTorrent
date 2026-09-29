@@ -35,6 +35,32 @@ Project GameTorrent/
 └── docs/                  # ARCHITECTURE.md, POC.md, WEBUI.md, CI_CD.md, GITOPS.md, CLOUDFLARE_TUNNEL.md, GIT_WORKFLOW.md, PROJECT_STRUCTURE.md, devsecops-notes/
 ```
 
+## Tech stack
+
+| Layer | Technology | Used for |
+|---|---|---|
+| Runtime | Node.js 20 (CommonJS) | Shared engine + web server |
+| P2P / download | [`webtorrent`](https://webtorrent.io) | Magnet-link downloads, selective file picking |
+| Archive extraction | [`extract-zip`](https://www.npmjs.com/package/extract-zip) | Unpacking downloaded archives |
+| Malware scanning | [ClamAV](https://www.clamav.net/) (`clamscan` CLI) + [VirusTotal](https://www.virustotal.com/) hash-lookup API | Signature scan pre-extraction, known-malware hash check |
+| Web framework | [Express](https://expressjs.com/) + `express-session` | Web UI HTTP server, session-based auth |
+| Schema validation | [`ajv`](https://ajv.js.org/) + `ajv-formats` | Validating `catalog.json` against its JSON Schema |
+| Torrent search | [Jackett](https://github.com/Jackett/Jackett) (user-hosted, proxied) | Indexer search without any built-in scraper |
+| Cover art | [libretro-thumbnails](https://github.com/libretro-thumbnails) (keyless) + optional [RAWG](https://rawg.io/apidocs) fallback | Box-art lookup by title/platform text only |
+| Frontend | Vanilla JS, HTML, CSS (no framework) — self-hosted `PressStart2P`/`VT323` fonts, hand-drawn inline-SVG sprites | 8-bit-styled dashboard UI |
+| Containerization | Docker, `node:20-bookworm-slim` (glibc — Alpine/musl segfaults `utp-native`) | Both the CLI PoC and the web UI images |
+| Orchestration (deploy target) | Docker Compose (deliberately **not** Kubernetes — see `docs/ARCHITECTURE.md`) | Running the web UI + its data volumes on the homelab VM |
+| GitOps / CD | [Komodo](https://komo.do) (core + periphery), backed by Postgres + [FerretDB](https://github.com/FerretDB/FerretDB) | Watches `main`, auto-redeploys the Compose stack on merge |
+| CI pipeline | GitLab CI (`cicd/.gitlab-ci.yml`) | validate → SAST → dependency-scan → build → image-scan → deploy gates |
+| SAST | [Semgrep](https://semgrep.dev/) | Static code scanning in CI |
+| Dependency / image scanning | [Trivy](https://aquasecurity.github.io/trivy/) | Vulnerable dependency + container image scanning in CI |
+| Config management | [Ansible](https://www.ansible.com/) | Bootstrapping Docker Engine + Compose on the target VM |
+| Ingress tunnel | [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/) (`cloudflared`, quick tunnel) | Outbound-only path for the GitLab deploy webhook — no inbound ports opened |
+| Monitoring | [Uptime Kuma](https://github.com/louislam/uptime-kuma) | Web UI liveness monitoring |
+| Password hashing | Node `crypto` (`scrypt` + per-user salt, `timingSafeEqual` compare) | `webui/lib/auth.js` |
+| Version control / hosting | Git, GitLab (primary, GitOps source of truth) | `dev`/`main` branch workflow — see `docs/GIT_WORKFLOW.md` |
+| Planned (Phase 2) | [Tauri](https://tauri.app/) (Rust backend + web frontend) | Native desktop app shell, in `apps/desktop/` |
+
 ## Legal model
 
 - Zero hardcoded links to commercial copyrighted ROMs or scraper code for illegal sites, anywhere in this codebase.
