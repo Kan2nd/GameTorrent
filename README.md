@@ -41,3 +41,112 @@ Project GameTorrent/
 - Bundled catalog = empty; anything it ever ships must be legal homebrew/freeware (the two entries it used to hold are in git history).
 - Custom feeds are 100% user-supplied and user-responsible; the engine (torrent client, extractor, launcher) is content-agnostic and doesn't validate legality of user-added feeds beyond schema shape.
 - Torrent search (web UI's Search tab) works the same way: GameTorrent contains no indexer-specific scraping code and ships zero built-in indexers. It only proxies a query to a [Jackett](https://github.com/Jackett/Jackett) instance the user runs and configures themselves, pointed at whatever indexers they have the right to search — see [docs/WEBUI.md](docs/WEBUI.md).
+
+## Why this project is a security/DevOps exercise, not just a game launcher
+
+The interesting problem here isn't the UI — it's that **every file this app
+touches originates from an untrusted, anonymous peer on a torrent swarm**, and
+the app still has to extract it, put it on disk, and hand it to a native
+emulator process. That threat model is what shaped the pipeline and the
+deployment setup below.
+
+### Data flow: from a magnet link to a picture on your screen
+
+```
+ ┌────────────┐   ┌───────────────┐   ┌────────────┐   ┌───────────────┐
+ │ 1. Search   │→ │ 2. Download    │→ │ 3. Isolate  │→ │ 4. Scan        │
+ │ Jackett     │  │ webtorrent /   │  │ own subdir  │  │ ClamAV (local) │
+ │ proxy query │  │ direct HTTP    │  │ per job,    │  │ + VirusTotal   │
+ │ (no scrape) │  │ selective-file │  │ never overw │  │ hash lookup    │
+ └────────────┘   │ download       │  │ -rites live │  └──────┬────────┘
+                   └───────────────┘   │ install     │         │ clean
+                                        └────────────┘         ▼
+ ┌────────────┐   ┌───────────────┐   ┌────────────┐   ┌───────────────┐
+ │ 8. Launch   │← │ 7. Track       │← │ 6. Serve    │← │ 5. Extract +   │
+ │ emulator,   │  │ stats.js       │  │ web UI:     │  │ verify         │
+ │ allowlisted │  │ download count │  │ auth'd      │  │ path-safe      │
+ │ CLI args    │  │ (per-IP rate-  │  │ session,    │  │ unzip, SHA-256 │
+ │ only        │  │ limited)       │  │ RBAC        │  │ hash check     │
+ └────────────┘   └───────────────┘   └──────┬──────┘  └───────────────┘
+                                              │
+                                    ┌─────────▼─────────┐
+                                    │ Cover art: title/  │
+                                    │ platform text only │
+                                    │ → libretro/RAWG     │
+                                    │ (no file content    │
+                                    │ ever leaves the box) │
+                                    └────────────────────┘
+```
+
+1. **Search** — `webui/lib/providers.js` only forwards a search string to a
+   Jackett instance the user owns; GameTorrent has no indexer code of its own.
+2. **Download** — `poc/pipeline.js` pulls via `webtorrent` (magnet, selective
+   file picking so a multi-disc torrent doesn't pull everything) or plain
+   HTTPS with redirects (`directUrl`).
+3. **Isolate** — every job gets its own destination folder under `roms/<platform>/<job>`;
+   nothing is written outside that path (see path-traversal note below).
+4. **Scan** — the raw downloaded payload is scanned with the local `clamscan`
+   CLI (`scanWithClamAV`) before extraction. A scan failure or detected threat
+   aborts the pipeline — the file is never extracted or exposed.
+5. **Extract + verify** — archives are extracted with `extract-zip`; the
+   resulting ROM's SHA-256 is computed and optionally checked against a
+   user-supplied hash and against VirusTotal's *hash* database (`VT_API_KEY`) —
+   never the file content itself, so nothing is uploaded to a third party.
+6. **Serve** — the web UI only exposes what's already on disk, behind a
+   session-authenticated, role-gated (admin/standard) Express app.
+7. **Track** — download counts persist to `webui/data/stats.json`; the
+   download-serving route is rate-limited per IP to blunt scripted scraping
+   of the library.
+8. **Launch** — an emulator is invoked from a fixed allowlist in
+   `config/emulators.json`; the launcher only ever appends the resolved,
+   validated ROM path as an argument — it never passes a torrent-supplied
+   string into a shell.
+
+### Isolation boundaries (what's supposed to stop a bad file from doing damage)
+
+| Boundary | Mechanism | File |
+|---|---|---|
+| Peer → disk | Own job subfolder; extraction target is `path.resolve`'d and checked with `startsWith(base + path.sep)` before any write | `poc/pipeline.js`, `webui/lib/library.js` |
+| Peer → scanner | ClamAV runs against the extracted directory before the app trusts any file in it | `poc/pipeline.js: scanWithClamAV` |
+| Peer → identity | SHA-256 verify + VirusTotal *hash* lookup (metadata only, no upload) before launch | `poc/pipeline.js: verifyHash, checkVirusTotal` |
+| Browser → filesystem | `/api/installed/*` and the admin delete route resolve paths under `ROMS_DIR` and reject `.`, `..`, and embedded separators | `webui/server.js`, `webui/lib/library.js` |
+| User → app | Session auth (`express-session`) gates every `/api/*` route; `requireAdmin` gates delete | `webui/lib/auth.js`, `webui/server.js` |
+| Client → server | Per-IP rate limiting on the ROM-download route (default: 5/min) | `webui/lib/rateLimit.js` |
+| App → OS process | Emulator launch args come only from `config/emulators.json` + the already-verified ROM path — never raw torrent metadata | `poc/pipeline.js` |
+| Container → host | `node:20-bookworm-slim` (glibc, not Alpine — `utp-native` segfaults on musl), runs as the image's default non-root-capable Node runtime, no host network mode | `Dockerfile`, `webui/Dockerfile` |
+| Secrets → repo | `credentials.md`, `webui/data/`, `cicd/gitops/compose.env` are all gitignored; provider API keys (Jackett) are stored server-side only, masked (`apiKeySet: true/false`) before ever reaching the browser | `.gitignore`, `webui/lib/providers.js` |
+
+Passwords in `webui/data/users.json` are scrypt-hashed with a per-user salt
+(`webui/lib/auth.js`), with constant-time comparison (`crypto.timingSafeEqual`)
+to resist timing attacks on login.
+
+### DevOps: how this ships
+
+- **CI (`cicd/.gitlab-ci.yml`)**: validate → SAST/dependency/image scanning →
+  build → deploy, so a vulnerable dependency or a bad image is caught before
+  it reaches the host, not after.
+- **GitOps, not manual deploys**: [Komodo](https://komo.do) watches the
+  `main` branch and redeploys the `gametorrent-webui` Docker Compose stack
+  automatically on merge — see [docs/GITOPS.md](docs/GITOPS.md).
+- **`dev`/`main` split with a hard rule**: all work lands on `dev`; merging to
+  `main` is the deploy trigger, so nobody (human or AI) pushes to `main`
+  directly — see [docs/GIT_WORKFLOW.md](docs/GIT_WORKFLOW.md).
+- **No inbound ports opened on the router**: the deploy webhook reaches a
+  private homelab VM through an outbound-only Cloudflare Tunnel, so the CI/CD
+  trigger doesn't require exposing the host to the internet — see
+  [docs/CLOUDFLARE_TUNNEL.md](docs/CLOUDFLARE_TUNNEL.md).
+- **Config/secrets separation**: runtime secrets are environment variables
+  and gitignored files, never baked into the image or committed
+  (`WEBUI_USER`/`WEBUI_PASSWORD`/`SESSION_SECRET`/`VT_API_KEY`/`RAWG_API_KEY`).
+- **Monitoring**: Uptime Kuma tracks the web UI's liveness independently of
+  the app itself.
+
+### Known gaps (documented, not hidden)
+
+- ClamAV signature-based scanning only catches known malware; it is not a
+  sandbox and won't catch a novel payload.
+- `docs/GIT_WORKFLOW.md` and `docs/CLOUDFLARE_TUNNEL.md` also record real
+  incidents from running this (a webhook secret reset, a path-traversal fix,
+  a squash-merge conflict loop) as a working log of what broke and why.
+- The Cloudflare quick tunnel has no domain, so its URL is not stable — see
+  the tunnel doc for the tradeoffs and the upgrade path.
