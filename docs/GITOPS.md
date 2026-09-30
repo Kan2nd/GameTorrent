@@ -103,7 +103,7 @@ redeploy is a manual **Deploy** click in Komodo's UI (Stacks →
 **Update (2026-09-17): a GitLab webhook is live and confirmed working** —
 pushes to `main` do trigger a real deploy. Getting the webhook *delivered*
 needed solving the exposure problem — `gitlab.com` can't reach a private
-LAN address like `192.168.96.145` directly. Solution: a Cloudflare quick
+LAN address like `<vm-ip>` directly. Solution: a Cloudflare quick
 tunnel.
 
 ```bash

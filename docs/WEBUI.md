@@ -74,25 +74,25 @@ segfaults on musl the moment real peer traffic flows.
 
 The web UI listens on every interface (`0.0.0.0:3000`), but *reachability*
 depends on the network the host sits on. In the current homelab the host is
-`kan2server`, a VMware VM at `192.168.96.145` on **VMnet8 (NAT)** — a private
+`kan2server`, a VMware VM at `<vm-ip>` on **VMnet8 (NAT)** — a private
 network that only the Windows PC running VMware can see. So:
 
 | From | Address | Works? |
 |---|---|---|
-| The Windows PC | `http://192.168.96.145:3000` | yes |
-| A phone/laptop on the home Wi-Fi (`192.168.1.x`) | `http://192.168.96.145:3000` | **no** — that subnet isn't routable from the Wi-Fi |
-| Any device on the same **Tailscale** account | `http://100.70.108.20:3000` | yes, from any network (Wi-Fi or mobile data) |
+| The Windows PC | `http://<vm-ip>:3000` | yes |
+| A phone/laptop on the home Wi-Fi (`192.168.1.x`) | `http://<vm-ip>:3000` | **no** — that subnet isn't routable from the Wi-Fi |
+| Any device on the same **Tailscale** account | `http://<tailscale-ip>:3000` | yes, from any network (Wi-Fi or mobile data) |
 
 **Phone via Tailscale (recommended):** install the Tailscale app, sign in with
 the same account as the VM (`kan2server` is already on the tailnet), turn it
-on, then open `http://100.70.108.20:3000`. The same address works for Uptime
+on, then open `http://<tailscale-ip>:3000`. The same address works for Uptime
 Kuma (`:3001`) and Komodo (`:9120`). No ports are opened to the internet.
 `tailscale status` on the VM lists which devices are online. Cover art needs
 the *phone* to have internet access too (see "Cover art").
 
 Alternatives, with the catch of each: switch the VM's adapter to **Bridged**
 in VMware so it gets a `192.168.1.x` address the phone can reach directly
-(but every reference to `192.168.96.145` — docs, Komodo, the webhook, bookmarks
+(but every reference to `<vm-ip>` — docs, Komodo, the webhook, bookmarks
 — then has to change); or forward a port on the Windows host
 (`netsh interface portproxy` + a firewall rule; only works while the PC is on
 and its Wi-Fi IP stays put). The app is HTTP-only, so don't expose it to the

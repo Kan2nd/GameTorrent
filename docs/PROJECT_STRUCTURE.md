@@ -207,9 +207,9 @@ Kubernetes and DVWA along the way; kept as reference only).
 
 ## 5. What's actually deployed right now
 
-Everything below runs on **`kan2server`** (`192.168.96.145`), a single
+Everything below runs on **`kan2server`** (`<vm-ip>`), a single
 Ubuntu Server VM on the homelab LAN, reached via key-based SSH
-(`kan2@192.168.96.145`, passwordless sudo).
+(`<ssh-user>@<vm-ip>`).
 
 **`gametorrent-webui` is now deployed via Komodo** (see `docs/GITOPS.md`),
 not by hand — it builds and runs `webui/docker-compose.yml` cloned fresh
@@ -240,7 +240,7 @@ Alpine for size.
 **Network / who can reach it:** `192.168.96.0/24` is VMware's VMnet8 (NAT)
 network, visible only to the Windows host — not to phones or other devices
 on the home Wi-Fi (`192.168.1.x`). Off-host access goes through Tailscale
-(`kan2server` = `100.70.108.20`); details and the alternatives are in
+(`kan2server` = `<tailscale-ip>`); details and the alternatives are in
 `docs/WEBUI.md` → "Reaching it from a phone or another device".
 
 A second VM, `kan2nd@192.168.96.143`, was originally meant to be a

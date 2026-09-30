@@ -68,7 +68,7 @@ whoami                     # your VM's login username
 cat > ~/.devsecops-env <<'EOF'
 # ---- EDIT THESE FOUR LINES ----
 export VM1_IP="192.168.96.143"      # control plane
-export VM2_IP="192.168.96.145"      # worker
+export VM2_IP="<vm-ip>"      # worker
 export VM1_USER="kan2nd"              # from `whoami` on VM1
 export VM2_USER="kan2"            # from `whoami` on VM2
 # -------------------------------

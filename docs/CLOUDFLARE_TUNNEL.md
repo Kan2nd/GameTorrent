@@ -28,18 +28,18 @@ the user says the tunnel is down / gives a new `trycloudflare.com` URL.
 
 | Thing | Value / where |
 |---|---|
-| VM | `kan2@192.168.96.145`, SSH key auth, passwordless sudo (`credentials.md`) |
+| VM | `<ssh-user>@<vm-ip>`, SSH key auth (details in the private `credentials.md`) |
 | Tunnel service | systemd unit `cloudflared-komodo-tunnel` |
 | Komodo listener | `http://localhost:9120` on the VM |
 | GitLab project | `kannguyen3105/gametorrent` (URL-encoded: `kannguyen3105%2Fgametorrent`) |
-| Webhook id | `89362451` |
+| Webhook id | `<webhook-id>` |
 | Webhook secret | `credentials.md`, line "Webhook secret" |
 | GitLab API token | file `D:\STUDY\Sem alone\gitlantoken.md` (see gotcha in 4) |
 | Branch filter | `main` |
 
 ## 2. First-time install (only if `cloudflared` is missing)
 
-Run on the VM (`ssh kan2@192.168.96.145`, from WSL on the user's PC):
+Run on the VM (`ssh <ssh-user>@<vm-ip>`, from WSL on the user's PC):
 
 ```bash
 curl -sSL -o /tmp/cloudflared.deb \
@@ -72,7 +72,7 @@ sudo systemctl enable --now cloudflared-komodo-tunnel
 ## 3. Get the current tunnel URL (or a fresh one)
 
 ```bash
-ssh kan2@192.168.96.145 "sudo systemctl is-active cloudflared-komodo-tunnel; \
+ssh <ssh-user>@<vm-ip> "sudo systemctl is-active cloudflared-komodo-tunnel; \
   sudo journalctl -u cloudflared-komodo-tunnel --no-pager | grep -o 'https://[a-z0-9-]*\.trycloudflare\.com' | tail -1"
 ```
 
@@ -82,7 +82,7 @@ Decide by what you see:
 - Journal shows `Unauthorized: Tunnel not found` (service still `active`): Cloudflare
   deleted the quick tunnel. Restart it, then re-read the URL:
   ```bash
-  ssh kan2@192.168.96.145 "sudo systemctl restart cloudflared-komodo-tunnel; sleep 8; \
+  ssh <ssh-user>@<vm-ip> "sudo systemctl restart cloudflared-komodo-tunnel; sleep 8; \
     sudo journalctl -u cloudflared-komodo-tunnel --no-pager -n 30 | grep -o 'https://[a-z0-9-]*\.trycloudflare\.com' | tail -1"
   ```
 - The user pasted a URL in chat: use that one, still verify it in 5.
@@ -99,7 +99,7 @@ cd "D:/STUDY/Sem alone/Project GameTorrent"
 PAT=$(tr -d ' \r\n' < ../gitlantoken.md)
 SEC=$(grep -i "Webhook secret" credentials.md | sed -E 's/.*[Ss]ecret:? *//; s/[`* ]//g')
 URL="https://<HOST>/listener/gitlab/stack/gametorrent-webui/deploy"
-API="https://gitlab.com/api/v4/projects/kannguyen3105%2Fgametorrent/hooks/89362451"
+API="https://gitlab.com/api/v4/projects/kannguyen3105%2Fgametorrent/hooks/<webhook-id>"
 
 curl -s -X PUT -H "PRIVATE-TOKEN: $PAT" "$API" \
   --data-urlencode "url=$URL" --data-urlencode "token=$SEC" \
@@ -179,8 +179,8 @@ Cause: the MR squashes `dev`, so `dev` falls "N commits behind" `main`. Follow
 
 | Task | Command |
 |---|---|
-| Is the tunnel service up? | `ssh kan2@192.168.96.145 "systemctl is-active cloudflared-komodo-tunnel"` |
-| Restart tunnel | `ssh kan2@192.168.96.145 "sudo systemctl restart cloudflared-komodo-tunnel"` |
+| Is the tunnel service up? | `ssh <ssh-user>@<vm-ip> "systemctl is-active cloudflared-komodo-tunnel"` |
+| Restart tunnel | `ssh <ssh-user>@<vm-ip> "sudo systemctl restart cloudflared-komodo-tunnel"` |
 | Current URL | journalctl grep in step 3 |
 | Update webhook | step 4 |
 | Verify | step 5 |
