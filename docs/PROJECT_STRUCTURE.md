@@ -237,13 +237,13 @@ real download inside the built container, not by any static check —
 worth remembering if either Dockerfile ever gets "optimized" back to
 Alpine for size.
 
-**Network / who can reach it:** `192.168.96.0/24` is VMware's VMnet8 (NAT)
+**Network / who can reach it:** `<vm-subnet>` is VMware's VMnet8 (NAT)
 network, visible only to the Windows host — not to phones or other devices
 on the home Wi-Fi (`192.168.1.x`). Off-host access goes through Tailscale
 (`kan2server` = `<tailscale-ip>`); details and the alternatives are in
 `docs/WEBUI.md` → "Reaching it from a phone or another device".
 
-A second VM, `kan2nd@192.168.96.143`, was originally meant to be a
+A second VM, `<ssh-user-2>@<vm2-ip>`, was originally meant to be a
 Kubernetes control-plane node before the project dropped k8s in favor of
 plain Docker. It's currently powered off and unused.
 

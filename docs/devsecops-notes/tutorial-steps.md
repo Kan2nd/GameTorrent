@@ -59,7 +59,7 @@ ip a | grep "inet "        # your VM's IP
 whoami                     # your VM's login username
 ```
 
-> **Note:** earlier drafts of this file mixed up `kan2`/`kan2nd`/`ubuntu` and two different
+> **Note:** earlier drafts of this file mixed up several usernames and two different
 > subnets. Whatever `whoami` and `ip a` print above is the truth — use those.
 
 ### 0b. Save them 🐧 WSL2
@@ -67,10 +67,10 @@ whoami                     # your VM's login username
 ```bash
 cat > ~/.devsecops-env <<'EOF'
 # ---- EDIT THESE FOUR LINES ----
-export VM1_IP="192.168.96.143"      # control plane
+export VM1_IP="<vm1-ip>"      # control plane
 export VM2_IP="<vm-ip>"      # worker
-export VM1_USER="kan2nd"              # from `whoami` on VM1
-export VM2_USER="kan2"            # from `whoami` on VM2
+export VM1_USER="<vm1-user>"              # from `whoami` on VM1
+export VM2_USER="<vm2-user>"            # from `whoami` on VM2
 # -------------------------------
 EOF
 
@@ -416,17 +416,17 @@ ls /etc/netplan/
 sudo nano /etc/netplan/50-cloud-init.yaml
 ```
 Adapt the interface name from `ip a` (e.g. `enp0s3`), and keep the addresses on **your actual
-subnet** — if your VMs are on `192.168.96.x`, do not paste `192.168.1.x`:
+subnet** — if your VMs are on e.g. `10.0.5.x`, do not paste `192.168.1.x`:
 ```yaml
 network:
   version: 2
   ethernets:
     enp0s3:
       dhcp4: no
-      addresses: [192.168.96.143/24]     # VM2: .145
+      addresses: [<vm1-ip>/24]     # VM2: <vm2-ip>
       routes:
         - to: default
-          via: 192.168.96.1              # your gateway — check with `ip route`
+          via: <gateway-ip>              # your gateway — check with `ip route`
       nameservers:
         addresses: [8.8.8.8, 1.1.1.1]
 ```
