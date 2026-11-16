@@ -1,0 +1,25 @@
+# namespace.yaml and grafana-secret.yaml are deliberately NOT listed here — same reasoning as
+# ../webui/kustomization.yaml's comment: the namespace is applied by hand once so Argo CD's
+# prune can never touch it, and the real secret is gitignored (this file would fail to render
+# for Argo CD, which only ever sees a git checkout, if it were listed).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - loki.yaml
+  - alloy.yaml
+  - grafana.yaml
+  - prometheus.yaml
+  - kube-state-metrics.yaml
+  - networkpolicy.yaml
+
+# The dashboard lives as a real .json file (editable, diff-able, reviewable) and is turned into
+# the ConfigMap grafana.yaml mounts. The name-suffix hash is turned off so that mount keeps a
+# stable name; the cost is that Grafana only re-reads dashboards on restart (it does anyway, for
+# provisioned ones), so after editing the JSON: `kubectl -n observability rollout restart deploy/grafana`.
+configMapGenerator:
+  - name: grafana-dashboards
+    namespace: observability
+    files:
+      - dashboards/cluster-overview.json
+    options:
+      disableNameSuffixHash: true

@@ -1,0 +1,26 @@
+# Same pattern as application.yaml (gametorrent-webui) — see its comments. Polls `main`, so this
+# shows `app path does not exist` until dev is merged to main; that's expected, not a bug.
+#
+# destination.namespace is nominal here (CreateNamespace=false, matching the others) — the
+# actual manifests each set their own explicit metadata.namespace (gametorrent or argocd), since
+# this one Application manages NetworkPolicy objects in two different namespaces.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: network-policies
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://gitlab.com/kannguyen3105/gametorrent.git
+    targetRevision: main
+    path: k8s/network-policies
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: gametorrent
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=false

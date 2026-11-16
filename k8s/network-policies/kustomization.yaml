@@ -1,0 +1,11 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - gametorrent-default-deny.yaml
+  - gametorrent-allow-dns.yaml
+  - gametorrent-allow-webui-to-jackett.yaml
+  - gametorrent-allow-webui-to-postgres.yaml
+  - gametorrent-allow-kuma-to-webui.yaml
+  - gametorrent-allow-egress-internet.yaml
+  - gametorrent-allow-ingress-exposed-ports.yaml
+  - argocd-isolate-from-other-namespaces.yaml

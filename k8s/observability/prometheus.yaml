@@ -1,0 +1,194 @@
+# Prometheus — the metrics half of observability (Loki/Alloy = logs, this = numbers over time).
+# Answers "how much CPU/RAM did webui use at 3pm yesterday", which neither `kubectl top` (current
+# value only) nor Loki (text) can.
+#
+# What it scrapes, and why these four and not more:
+#   - kubelet /metrics            -> PVC usage (kubelet_volume_stats_*), kubelet's own health
+#   - kubelet /metrics/cadvisor   -> per-pod/container CPU, memory, network, plus node totals (id="/")
+#   - kube-state-metrics          -> what Kubernetes *believes*: restarts, readiness, replica counts
+#   - itself
+# Deliberately NOT node-exporter: it needs read access to the host's /proc, /sys and filesystem
+# (hostPath / hostPID), which contradicts the hardening every other workload here follows.
+# cAdvisor already reports node-level CPU/memory via the root cgroup. If node *disk* numbers
+# turn out too thin, that's the one reason to revisit it — as a conscious exception, not by default.
+#
+# Scrapes the kubelet directly (node IP:10250) with its ServiceAccount token, which only needs
+# `nodes/metrics` — NOT `nodes/proxy`, which is a much broader permission (it can reach the
+# kubelet's exec/run endpoints). The kubelet's serving cert is self-signed on k3s, hence
+# insecure_skip_verify — the same reason metrics-server needs --kubelet-insecure-tls here, and the
+# same accepted trade-off (it's an in-node connection to the host's own kubelet).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: prometheus
+  namespace: observability
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: prometheus-scrape
+rules:
+  # list/watch nodes: service discovery finds each node's kubelet address from this.
+  - apiGroups: [""]
+    resources: [nodes]
+    verbs: [get, list, watch]
+  # The kubelet authorizes /metrics and /metrics/cadvisor against this one subresource.
+  - apiGroups: [""]
+    resources: [nodes/metrics]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: prometheus-scrape
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: prometheus-scrape
+subjects:
+  - kind: ServiceAccount
+    name: prometheus
+    namespace: observability
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+  namespace: observability
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 30s
+      evaluation_interval: 30s
+
+    scrape_configs:
+      - job_name: prometheus
+        static_configs:
+          - targets: ["localhost:9090"]
+
+      - job_name: kube-state-metrics
+        static_configs:
+          - targets: ["kube-state-metrics.observability.svc.cluster.local:8080"]
+
+      # Same kubelet, two endpoints, so two jobs. `node` is relabelled in from the node's name
+      # because the default `instance` is the node's DHCP-leased IP, which changes — queries and
+      # dashboards should never depend on it.
+      - job_name: kubelet
+        scheme: https
+        authorization:
+          credentials_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+        tls_config:
+          insecure_skip_verify: true
+        kubernetes_sd_configs:
+          - role: node
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_node_name]
+            target_label: node
+
+      - job_name: cadvisor
+        scheme: https
+        metrics_path: /metrics/cadvisor
+        authorization:
+          credentials_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+        tls_config:
+          insecure_skip_verify: true
+        kubernetes_sd_configs:
+          - role: node
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_node_name]
+            target_label: node
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: prometheus-data
+  namespace: observability
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path
+  resources:
+    requests:
+      # Retention below is capped by SIZE as well as time, so this can't fill the node's disk
+      # (local-path PVCs aren't quota-enforced — see k8s/webui/pvc.yaml's note on that).
+      storage: 5Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus
+  namespace: observability
+spec:
+  selector:
+    app: prometheus
+  ports:
+    - { name: http, port: 9090, targetPort: 9090 }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus
+  namespace: observability
+  labels:
+    app: prometheus
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate # ReadWriteOnce PVC — never two writers on one TSDB
+  selector:
+    matchLabels:
+      app: prometheus
+  template:
+    metadata:
+      labels:
+        app: prometheus
+    spec:
+      # Unlike webui/jackett/kuma/loki/grafana, this one NEEDS its token: it reads it to
+      # authenticate to the kubelet and to list nodes. (It's what the ClusterRole above is for.)
+      serviceAccountName: prometheus
+      automountServiceAccountToken: true
+      securityContext:
+        # 65534 (nobody) is the image's own default user — confirmed from its config, not guessed.
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        fsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: prometheus
+          # Pinned by digest (log/M5) — v3.15.1.
+          image: quay.io/prometheus/prometheus@sha256:fa3302279710be2f21a8301ec17a8b4f2301fd829bd113839b3b6b02b6f191a2
+          args:
+            - --config.file=/etc/prometheus/prometheus.yml
+            - --storage.tsdb.path=/prometheus
+            # 15 days OR 3GB, whichever hits first. Not indefinite: this is "debug what happened
+            # last week", not an archive. Admin/lifecycle APIs are deliberately left OFF — they
+            # let anyone who can reach the port delete data or reload config.
+            - --storage.tsdb.retention.time=15d
+            - --storage.tsdb.retention.size=3GB
+          ports:
+            - { containerPort: 9090, name: http }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { cpu: "1", memory: 768Mi }
+          readinessProbe:
+            httpGet: { path: /-/ready, port: 9090 }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /-/healthy, port: 9090 }
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          volumeMounts:
+            - { name: config, mountPath: /etc/prometheus }
+            - { name: data, mountPath: /prometheus }
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - { name: config, configMap: { name: prometheus-config } }
+        - { name: data, persistentVolumeClaim: { claimName: prometheus-data } }
+        - { name: tmp, emptyDir: { medium: Memory, sizeLimit: 64Mi } }

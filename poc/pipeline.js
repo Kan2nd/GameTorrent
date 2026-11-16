@@ -21,10 +21,89 @@ const WebTorrent = require('webtorrent');
 const extractZip = require('extract-zip');
 
 const ROOT = path.resolve(__dirname, '..');
-const DOWNLOADS_DIR = path.join(ROOT, 'downloads');
-const ROMS_DIR = path.join(ROOT, 'roms');
+// GT_DOWNLOADS_DIR / GT_ROMS_DIR override these so tests can use throwaway folders.
+const DOWNLOADS_DIR = path.resolve(process.env.GT_DOWNLOADS_DIR || path.join(ROOT, 'downloads'));
+const ROMS_DIR = path.resolve(process.env.GT_ROMS_DIR || path.join(ROOT, 'roms'));
 const CATALOG_PATH = path.join(ROOT, 'catalog', 'catalog.json');
 const EMULATORS_PATH = path.join(ROOT, 'config', 'emulators.json');
+
+// --- Path safety ---
+// Folder/file names in a job (destSubfolder, platform, a direct-URL's filename) come from outside
+// this program — a web form, a request, a third-party feed. Each one ends up in a path.join() that
+// decides where on disk files get written, so each one must be a single plain name: no separators,
+// no "." / "..", nothing that could climb out of downloads/ or roms/.
+const SAFE_NAME_RE = /^[A-Za-z0-9._-]{1,128}$/;
+const SAFE_PLATFORM_RE = /^[a-z0-9]{1,20}$/;
+
+function assertSafeName(value, label) {
+  const s = String(value == null ? '' : value);
+  if (!SAFE_NAME_RE.test(s) || s === '.' || s === '..') {
+    throw new Error(`${label} must be a plain folder/file name (letters, digits, ".", "_", "-"), got "${s.slice(0, 60)}"`);
+  }
+  return s;
+}
+
+function assertSafePlatform(value) {
+  const s = String(value == null ? '' : value);
+  if (s !== 'auto' && !SAFE_PLATFORM_RE.test(s)) throw new Error(`platform must be a short lowercase id like "gba", got "${s.slice(0, 30)}"`);
+  return s;
+}
+
+/** Throws unless target is strictly inside base — the last line of defence before any write/read. */
+function assertInside(base, target, label) {
+  const b = path.resolve(base);
+  const t = path.resolve(target);
+  if (!t.startsWith(b + path.sep)) throw new Error(`${label} resolves outside ${b} — refusing`);
+  return t;
+}
+
+// --- Outbound fetch guard (SSRF) ---
+// Feed URLs and direct-download URLs are typed in by people, and the server fetches them from
+// INSIDE the network — where it can reach things a visitor can't (Komodo, Jackett, Uptime Kuma,
+// the LAN, the Docker network). So these fetches may only go to public addresses. Checked at two
+// points: IP-literal hosts before the request (Node skips DNS lookup for those), and every
+// DNS-resolved address at connect time via a custom `lookup` (which also closes DNS-rebinding and
+// redirect-to-internal tricks, since each hop reconnects through it). ALLOW_PRIVATE_FETCH=1 turns
+// the guard off for setups that deliberately host feeds/files on the LAN.
+const net = require('net');
+const dns = require('dns');
+
+const BLOCKED_NETS = new net.BlockList();
+for (const [addr, prefix] of [
+  ['0.0.0.0', 8], ['10.0.0.0', 8], ['100.64.0.0', 10], ['127.0.0.0', 8], ['169.254.0.0', 16],
+  ['172.16.0.0', 12], ['192.0.0.0', 24], ['192.168.0.0', 16], ['198.18.0.0', 15], ['224.0.0.0', 3],
+]) BLOCKED_NETS.addSubnet(addr, prefix, 'ipv4');
+for (const [addr, prefix] of [['::', 128], ['::1', 128], ['fc00::', 7], ['fe80::', 10], ['ff00::', 8]]) {
+  BLOCKED_NETS.addSubnet(addr, prefix, 'ipv6');
+}
+
+function isBlockedAddress(ip) {
+  if (process.env.ALLOW_PRIVATE_FETCH === '1') return false;
+  const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/i.exec(ip); // IPv4-mapped IPv6 -> check as IPv4
+  if (mapped) return BLOCKED_NETS.check(mapped[1], 'ipv4');
+  return BLOCKED_NETS.check(ip, net.isIPv6(ip) ? 'ipv6' : 'ipv4');
+}
+
+/** Throws unless url is http(s) and (if its host is an IP literal) a public address. */
+function assertFetchAllowed(url) {
+  let u;
+  try { u = new URL(url); } catch { throw new Error(`Not a valid URL: ${String(url).slice(0, 80)}`); }
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') throw new Error(`Only http/https URLs are allowed, got ${u.protocol}`);
+  const host = u.hostname.replace(/^\[|\]$/g, '');
+  if (net.isIP(host) && isBlockedAddress(host)) throw new Error(`Refusing to fetch from a private/internal address (${host})`);
+  return u;
+}
+
+/** Drop-in `lookup` for http(s).get: resolves normally, then refuses private/internal results. */
+function guardedLookup(hostname, options, callback) {
+  dns.lookup(hostname, options, (err, address, family) => {
+    if (err) return callback(err);
+    const list = Array.isArray(address) ? address : [{ address, family }];
+    const bad = list.find((a) => isBlockedAddress(a.address));
+    if (bad) return callback(new Error(`Refusing to connect to ${hostname}: it resolves to a private/internal address (${bad.address})`));
+    callback(null, address, family);
+  });
+}
 
 function loadJson(p) {
   return JSON.parse(fs.readFileSync(p, 'utf8'));
@@ -67,12 +146,13 @@ function buildJobFromGameId(gameId, catalog) {
   return {
     gameId: game.id,
     title: game.title,
-    platform: game.platform,
+    platform: assertSafePlatform(game.platform),
     sourceType: game.source.type,
     magnetUri: game.source.magnetUri,
     directUrl: game.source.directUrl,
     selectPatterns: game.source.selectFiles || [],
-    destSubfolder: (game.extraction && game.extraction.destSubfolder) || game.id,
+    // Feeds are third-party content — never trust their folder names.
+    destSubfolder: assertSafeName((game.extraction && game.extraction.destSubfolder) || game.id, 'destSubfolder'),
     archiveFormat: (game.extraction && game.extraction.archiveFormat) || 'none',
     romFile: game.launch.romFile,
     verification: game.verification,
@@ -93,6 +173,8 @@ function buildJobFromGameId(gameId, catalog) {
 function buildJobFromParams(params) {
   if (!params.magnetUri && !params.directUrl) throw new Error('magnetUri or directUrl is required');
   if (!params.destSubfolder) throw new Error('destSubfolder is required');
+  assertSafeName(params.destSubfolder, 'destSubfolder');
+  if (params.platform) assertSafePlatform(params.platform);
 
   let emulator = null;
   if (params.emulatorId) {
@@ -141,7 +223,7 @@ const STATUS_LOG_INTERVAL_MS = 30 * 1000;
 function downloadTorrent(job, emitter) {
   return new Promise((resolve, reject) => {
     const client = new WebTorrent();
-    const outDir = path.join(DOWNLOADS_DIR, job.destSubfolder);
+    const outDir = assertInside(DOWNLOADS_DIR, path.join(DOWNLOADS_DIR, job.destSubfolder), 'download folder');
     fs.mkdirSync(outDir, { recursive: true });
 
     let settled = false;
@@ -217,14 +299,20 @@ function downloadTorrent(job, emitter) {
 /** Plain HTTP(S) download for source.type "directUrl" — most small homebrew (Switch .nro, itch.io zips) is distributed this way, not via torrent. Follows one redirect hop. */
 function downloadDirect(job, emitter, redirectsLeft = 5) {
   return new Promise((resolve, reject) => {
-    const outDir = path.join(DOWNLOADS_DIR, job.destSubfolder);
+    const outDir = assertInside(DOWNLOADS_DIR, path.join(DOWNLOADS_DIR, job.destSubfolder), 'download folder');
+    // Checked on every hop — this function recurses for each redirect, so a public URL that
+    // redirects somewhere internal is caught here too (and by guardedLookup at connect time).
+    let target;
+    try { target = assertFetchAllowed(job.directUrl); } catch (err) { reject(err); return; }
     fs.mkdirSync(outDir, { recursive: true });
 
-    const lib = job.directUrl.startsWith('http://') ? require('http') : https;
-    lib.get(job.directUrl, (res) => {
+    const lib = target.protocol === 'http:' ? require('http') : https;
+    lib.get(target, { lookup: guardedLookup }, (res) => {
       if ([301, 302, 303, 307, 308].includes(res.statusCode) && res.headers.location && redirectsLeft > 0) {
         res.resume();
-        downloadDirect({ ...job, directUrl: res.headers.location }, emitter, redirectsLeft - 1)
+        // Location may be relative — resolve it against the URL that sent it.
+        const next = new URL(res.headers.location, target).toString();
+        downloadDirect({ ...job, directUrl: next }, emitter, redirectsLeft - 1)
           .then(resolve, reject);
         return;
       }
@@ -234,8 +322,13 @@ function downloadDirect(job, emitter, redirectsLeft = 5) {
         return;
       }
 
-      const filename = decodeURIComponent(job.directUrl.split('/').pop().split('?')[0]) || 'download.bin';
-      const destPath = path.join(outDir, filename);
+      // The URL's last segment becomes the filename. Decoding can turn "%2F" into "/", so reduce
+      // it to a bare basename afterwards and fall back to a fixed name if what's left isn't plain.
+      let filename;
+      try { filename = path.basename(decodeURIComponent(job.directUrl.split('/').pop().split('?')[0])); }
+      catch { filename = ''; }
+      if (!SAFE_NAME_RE.test(filename) || filename === '.' || filename === '..') filename = 'download.bin';
+      const destPath = assertInside(outDir, path.join(outDir, filename), 'download file');
       const total = parseInt(res.headers['content-length'], 10) || 0;
       let received = 0;
 
@@ -290,6 +383,22 @@ function resolveArchiveFormat(job, downloadResult, emitter) {
   return format;
 }
 
+/**
+ * extract-zip, but refusing symlink entries. A zip can store a symlink (e.g. pointing at a folder
+ * outside the target) and later entries can then be written *through* it — that's the known
+ * extract-zip advisory. ROM archives never legitimately need symlinks, so any symlink entry
+ * aborts the whole extraction. extract-zip itself already rejects plain "../" entry names.
+ */
+function safeExtractZip(zipPath, dir) {
+  return extractZip(zipPath, {
+    dir,
+    onEntry(entry) {
+      const mode = (entry.externalFileAttributes >>> 16) & 0o170000;
+      if (mode === 0o120000) throw new Error(`Zip contains a symlink entry ("${entry.fileName}") — refusing to extract`);
+    },
+  });
+}
+
 async function extractIfNeeded(job, downloadResult, emitter) {
   const archiveFormat = resolveArchiveFormat(job, downloadResult, emitter);
   if (archiveFormat !== 'none' && archiveFormat !== 'zip') {
@@ -305,14 +414,19 @@ async function extractIfNeeded(job, downloadResult, emitter) {
   if (archiveFormat === 'zip' && job.platform === 'auto') {
     staged = path.join(downloadResult.outDir, '_extracted');
     fs.mkdirSync(staged, { recursive: true });
-    await extractZip(pickZip(downloadResult), { dir: staged });
+    await safeExtractZip(pickZip(downloadResult), staged);
   }
   if (job.platform === 'auto') {
-    job.platform = detectPlatform(job, staged ? listFilesRecursive(staged) : downloadResult.files);
-    emitter.emit('log', `Platform auto-detected: ${job.platform}`);
+    const detected = detectPlatform(job, staged ? listFilesRecursive(staged) : downloadResult.files);
+    job.platform = detected.platform;
+    emitter.emit('log', detected.why
+      ? `Platform not recognised (${detected.why}) - keeping it as "${UNKNOWN_PLATFORM}"; an admin can set the console in the Library.`
+      : `Platform auto-detected: ${job.platform}`);
   }
 
-  const destDir = path.join(ROMS_DIR, job.platform, job.destSubfolder);
+  // platform may have just been auto-detected; both parts are re-checked before anything is written.
+  assertSafePlatform(job.platform);
+  const destDir = assertInside(ROMS_DIR, path.join(ROMS_DIR, job.platform, job.destSubfolder), 'install folder');
   fs.mkdirSync(destDir, { recursive: true });
 
   if (staged) {
@@ -330,7 +444,7 @@ async function extractIfNeeded(job, downloadResult, emitter) {
     return destDir;
   }
 
-  await extractZip(pickZip(downloadResult), { dir: destDir });
+  await safeExtractZip(pickZip(downloadResult), destDir);
   emitter.emit('log', `Extracted zip to ${destDir}`);
   return destDir;
 }
@@ -454,6 +568,8 @@ const UNIQUE_EXTENSION_PLATFORM = {
   '.gcm': 'gamecube', '.rvz': 'gamecube', '.ciso': 'gamecube', '.gen': 'genesis',
   '.gdi': 'dreamcast', '.cdi': 'dreamcast', '.cso': 'psp',
   '.nro': 'switch', '.nsp': 'switch', '.xci': 'switch',
+  '.wbfs': 'wii', '.xex': 'xbox360', '.pbp': 'psp', '.vpk': 'psvita',
+  '.sms': 'sms', '.gg': 'gamegear', '.pce': 'pcengine', '.a26': 'atari2600', '.a78': 'atari7800', '.lnx': 'lynx', '.ws': 'wonderswan', '.wsc': 'wonderswan', '.ngp': 'neogeopocket', '.ngc': 'neogeopocket',
 };
 
 function guessPlatformFromText(text) {
@@ -461,19 +577,27 @@ function guessPlatformFromText(text) {
   return hit ? hit[0] : null;
 }
 
-/** Platform for a job whose platform is 'auto': by file extensions first, then platform words in the title/file names. */
+/** What detectPlatform returns when it can't decide. The game is KEPT (roms/unknown/<folder>/) and shown in the library
+ *  with a generic tile; an admin can assign the real console later. Nothing is thrown away just because we can't name it. */
+const UNKNOWN_PLATFORM = 'unknown';
+
+/**
+ * Platform for a job whose platform is 'auto': by file extensions first, then platform words in the title/file names.
+ * Never throws: if nothing identifies it (or the files point at several consoles) the result is 'unknown' and `why` says so.
+ */
 function detectPlatform(job, fileNames) {
   const byExt = new Set(
     fileNames.map((f) => UNIQUE_EXTENSION_PLATFORM[path.extname(f).toLowerCase()]).filter(Boolean)
   );
-  if (byExt.size === 1) return [...byExt][0];
+  if (byExt.size === 1) return { platform: [...byExt][0], why: null };
   const guess = guessPlatformFromText(`${job.title || ''} ${job.destSubfolder} ${fileNames.join(' ')}`);
-  if (guess) return guess;
-  throw new Error(
-    byExt.size > 1
-      ? `Couldn't pick a platform automatically — files match several (${[...byExt].join(', ')}). Use "Add custom download" and choose one.`
-      : `Couldn't tell which platform this is from its file names — use "Add custom download" and choose one.`
-  );
+  if (guess) return { platform: guess, why: null };
+  return {
+    platform: UNKNOWN_PLATFORM,
+    why: byExt.size > 1
+      ? `the files match several consoles (${[...byExt].join(', ')})`
+      : "no file extension or platform name in the title/file names identified it",
+  };
 }
 
 // File extensions treated as "the ROM" per platform, for auto-detecting
@@ -516,6 +640,15 @@ function listFilesRecursive(dir, base = dir) {
  * caller needs to specify romFile explicitly instead of guessing wrong.
  */
 function autoDetectRomFile(destDir, platform, emitter) {
+  if (platform === UNKNOWN_PLATFORM) {
+    // No extension rules for an unidentified console: the biggest file is the best guess at "the game".
+    const files = listFilesRecursive(destDir)
+      .map((f) => ({ f, size: fs.statSync(path.join(destDir, f)).size }))
+      .sort((a, b) => b.size - a.size);
+    if (!files.length) throw new Error(`Nothing was extracted into ${destDir}`);
+    emitter.emit('log', `Unknown platform: using the largest file as the main one: ${files[0].f}`);
+    return path.join(destDir, files[0].f);
+  }
   const extensions = ROM_EXTENSIONS[platform];
   if (!extensions) {
     throw new Error(`No romFile given, and platform "${platform}" has no known ROM extension to auto-detect — specify romFile explicitly.`);
@@ -545,7 +678,9 @@ function autoDetectRomFile(destDir, platform, emitter) {
 function resolveRomPath(destDir, romFile, platform, emitter) {
   if (!romFile) return autoDetectRomFile(destDir, platform, emitter);
 
-  const exact = path.join(destDir, romFile);
+  // romFile can come from a feed and may be a relative path into subfolders — allowed, but it
+  // must still land inside this game's own folder.
+  const exact = assertInside(destDir, path.join(destDir, romFile), 'romFile');
   if (fs.existsSync(exact)) return exact;
 
   if (!romFile.includes('/') && !romFile.includes('\\')) {
@@ -629,8 +764,9 @@ module.exports = {
   loadJson, loadCatalog, loadEmulators,
   globToRegExp,
   buildJobFromGameId, buildJobFromParams,
+  assertFetchAllowed, guardedLookup, assertSafeName,
   downloadTorrent, downloadDirect, fetchPayload, extractIfNeeded, scanWithClamAV, checkVirusTotal,
   resolveRomPath, verifyHash, launchEmulator,
-  guessPlatformFromText, detectPlatform, PLATFORM_KEYWORDS, ROM_EXTENSIONS, FILE_TYPE_EXTENSIONS,
+  guessPlatformFromText, detectPlatform, UNKNOWN_PLATFORM, PLATFORM_KEYWORDS, ROM_EXTENSIONS, FILE_TYPE_EXTENSIONS,
   runJob,
 };

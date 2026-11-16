@@ -1,0 +1,24 @@
+# Every pod needs this or nothing else works — DNS to CoreDNS in kube-system. Separate from the
+# internet-egress rule in allow-egress-internet.yaml: that one explicitly excludes
+# cluster-internal ranges (which is where CoreDNS's own Service IP, 10.43.0.10, lives), so DNS
+# needs its own explicit allow or it'd be blocked by the exact rule meant to stop pods reaching
+# internal infrastructure.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns
+  namespace: gametorrent
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }

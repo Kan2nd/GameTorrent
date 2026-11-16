@@ -1,0 +1,107 @@
+# Uptime Kuma, moved off a plain `docker run` container into k3s — docs/K8S_MIGRATION.md
+# Phase 5. Same image and same /app/data (SQLite DB with the monitors and the admin login), so
+# nothing has to be re-entered.
+#
+# SECURITY: runs as uid 1000 (not root), every Linux capability dropped, read-only rootfs.
+# The old note here blamed Kuma's Node.js code for an unconditional `chown /app/data`. That was
+# wrong: it is the image's ENTRYPOINT script (extra/entrypoint.sh), which chowns the data folder
+# to PUID:PGID and only then drops privileges with `setpriv`, so it needs root. This manifest skips
+# that script and starts Kuma directly (`dumb-init -- node server/server.js`, what the script ends
+# up exec'ing anyway). Ownership of the existing root-owned data is fixed once by the
+# fix-volume-ownership initContainer below, the same pattern as the webui. Tested 2026-11-05
+# against a copy of the live data: serves, writes its SQLite DB, ICMP ping works without NET_RAW
+# (the net.ipv4.ping_group_range sysctl below), and the only monitor in use is HTTP.
+#
+# KSV-0024 (hostPort) is accepted in ../../.trivyignore, same reasoning as the webui's: keeps
+# the :3001 address/bookmarks identical to the Docker deployment on a single node.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: uptime-kuma
+  namespace: gametorrent
+  labels:
+    app: uptime-kuma
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate # SQLite on a ReadWriteOnce PVC — never two writers
+  selector:
+    matchLabels:
+      app: uptime-kuma
+  template:
+    metadata:
+      labels:
+        app: uptime-kuma
+    spec:
+      # Never calls the k8s API — no token needed, so none gets mounted (nothing to steal via
+      # a vertical escalation if this container is ever fully compromised).
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+        sysctls:
+          # What lets ICMP "ping" monitors work for a non-root user without CAP_NET_RAW.
+          - name: net.ipv4.ping_group_range
+            value: "0 2147483647"
+      initContainers:
+        # local-path volumes are created root-owned (and Kuma used to run as root, so its data is).
+        # Needs root for exactly one thing, so it gets exactly three capabilities and nothing else.
+        - name: fix-volume-ownership
+          image: busybox:1.36@sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662
+          command: ["sh", "-c", "chown -R 1000:1000 /app/data"]
+          securityContext:
+            runAsUser: 0
+            runAsNonRoot: false
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+              add: [CHOWN, DAC_OVERRIDE, FOWNER]
+          volumeMounts:
+            - { name: data, mountPath: /app/data }
+      containers:
+        - name: uptime-kuma
+          # Pinned by digest (log/M5) — the exact image the Docker container was running:
+          # louislam/uptime-kuma 1.23.17. Kuma 2.x is a major version with a DB migration;
+          # that's a separate, deliberate upgrade, not something to float into via a tag.
+          image: louislam/uptime-kuma@sha256:3d632903e6af34139a37f18055c4f1bfd9b7205ae1138f1e5e8940ddc1d176f9
+          # Skips the image's entrypoint.sh, which needs root (see the SECURITY note at the top).
+          command: ["/usr/bin/dumb-init", "--", "node", "server/server.js"]
+          ports:
+            - containerPort: 3001
+              hostPort: 3001
+          securityContext:
+            allowPrivilegeEscalation: false
+            # /tmp below covers whatever scratch space Node/sqlite want outside /app/data.
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+          livenessProbe:
+            httpGet: { path: /, port: 3001 }
+            initialDelaySeconds: 40
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet: { path: /, port: 3001 }
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          volumeMounts:
+            - { name: data, mountPath: /app/data }
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - { name: data, persistentVolumeClaim: { claimName: uptime-kuma-data } }
+        - { name: tmp, emptyDir: { medium: Memory, sizeLimit: 128Mi } }

@@ -20,7 +20,7 @@ const fs = require('fs');
 const path = require('path');
 const https = require('https');
 
-const DATA_DIR = path.join(__dirname, '..', 'data');
+const { DATA_DIR } = require('./paths');
 const INDEX_CACHE_PATH = path.join(DATA_DIR, 'libretro-index.json');
 const CDN = 'https://thumbnails.libretro.com';
 const INDEX_TTL_MS = 7 * 24 * 60 * 60 * 1000;   // box art rarely changes
@@ -265,7 +265,8 @@ function rawgLookup(title) {
 const coverMemo = new Map(); // "platform|title" -> url | null
 
 async function lookupCoverUncapped(title, platform) {
-  const plat = platform || guessPlatform(title);
+  // 'unknown' = an install nobody could name yet: try to read the console from the title instead
+  const plat = (platform && platform !== 'unknown') ? platform : guessPlatform(title);
   const key = `${plat || '?'}|${String(title || '').toLowerCase()}`;
   if (coverMemo.has(key)) return coverMemo.get(key);
 

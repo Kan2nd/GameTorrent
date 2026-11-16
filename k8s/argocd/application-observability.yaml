@@ -1,0 +1,22 @@
+# Same pattern as application.yaml (gametorrent-webui) — see its comments. Polls `main`, so this
+# shows `app path does not exist` until dev is merged to main; that's expected, not a bug.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: observability
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://gitlab.com/kannguyen3105/gametorrent.git
+    targetRevision: main
+    path: k8s/observability
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: observability
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=false

@@ -1,0 +1,14 @@
+# Jackett's /config (indexer definitions + ServerConfig.json, which holds the API key and the
+# admin password hash). ~100K today. Same local-path caveats as ../webui/pvc.yaml: a plain
+# hostPath dir on this node, no quota enforcement, single-node only.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: jackett-config
+  namespace: gametorrent
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 1Gi

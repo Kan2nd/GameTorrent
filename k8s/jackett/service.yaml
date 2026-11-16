@@ -1,0 +1,15 @@
+# In-cluster address for Jackett: http://jackett:9117 from anything in the `gametorrent`
+# namespace (this is what GameTorrent's Search provider should point at — it never changes,
+# unlike the VM's DHCP-leased LAN IP the old Docker-era provider URL was stuck with).
+# External access (LAN/Tailscale) still goes through the Deployment's hostPort.
+apiVersion: v1
+kind: Service
+metadata:
+  name: jackett
+  namespace: gametorrent
+spec:
+  selector:
+    app: jackett
+  ports:
+    - port: 9117
+      targetPort: 9117

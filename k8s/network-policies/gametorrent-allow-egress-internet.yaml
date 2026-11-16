@@ -1,0 +1,40 @@
+# webui and Jackett both have a real, legitimate reason to reach the open internet: webui
+# downloads torrents/ROMs from arbitrary peers, looks up cover art (libretro/RAWG), and
+# refreshes ClamAV's signature DB; Jackett queries whatever indexer sites it's configured with.
+# Uptime Kuma gets none of this — it only ever needs to reach webui in-cluster (see
+# allow-kuma-to-webui.yaml), so a compromised Kuma pod can't be used to exfiltrate anything or
+# pivot outbound at all.
+#
+# The actual hardening: "internet" here explicitly EXCLUDES every internal range, not just
+# "allow everything". A compromised webui or Jackett pod can still reach torrent peers and
+# indexer sites (that's the whole point of the app), but can't use this rule to reach the pod
+# network, Service ClusterIPs, the LAN, or Tailscale as a side effect of a blanket allow.
+# Verified against this cluster's actual ranges (not assumed):
+#   - 10.0.0.0/8     Cilium's real pod IPAM pool (cluster-pool-ipv4-cidr) — covers k3s's
+#                    nominal 10.42.0.0/24 podCIDR too, since that's a subset of this.
+#   - 10.43.0.0/16   Service ClusterIPs (kubernetes.default itself is 10.43.0.1)
+#   - 192.0.2.0/24  kan2server's own LAN
+#   - 100.64.0.0/10  Tailscale (CGNAT range) — no pod here needs to reach another Tailscale peer
+#   - 169.254.0.0/16  link-local
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-internet
+  namespace: gametorrent
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app
+        operator: In
+        values: [gametorrent-webui, jackett]
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 10.43.0.0/16
+              - 192.0.2.0/24
+              - 100.64.0.0/10
+              - 169.254.0.0/16

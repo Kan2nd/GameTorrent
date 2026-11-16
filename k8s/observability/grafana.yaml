@@ -1,0 +1,149 @@
+# Grafana — the dashboard/query UI over Loki's logs. Deliberately NOT exposed via hostPort —
+# same reasoning as Argo CD (log/C2): another admin panel, reachable only via
+# `kubectl port-forward`, not the LAN/Tailscale. See docs/TUTORIALS.md for the access recipe.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-datasources
+  namespace: observability
+data:
+  # Grafana's own "provisioning" mechanism: reads *.yaml files under
+  # /etc/grafana/provisioning/datasources/ at startup and configures them automatically — Loki
+  # is pre-wired the moment Grafana boots, no manual "Add data source" click needed.
+  loki.yaml: |
+    apiVersion: 1
+    # Explicit uids, because the provisioned dashboard (k8s/observability/dashboards/) refers to
+    # its datasources by uid. Loki previously had an auto-generated uid, so it's deleted first and
+    # re-created — safe, since it's provisioned read-only (editable: false) and holds no state.
+    deleteDatasources:
+      - { name: Loki, orgId: 1 }
+    datasources:
+      - name: Loki
+        uid: loki
+        type: loki
+        access: proxy
+        url: http://loki.observability.svc.cluster.local:3100
+        isDefault: true
+        editable: false
+      - name: Prometheus
+        uid: prometheus
+        type: prometheus
+        access: proxy
+        url: http://prometheus.observability.svc.cluster.local:9090
+        editable: false
+---
+# Tells Grafana to load every *.json under /etc/grafana/dashboards as a dashboard, at startup.
+# The JSON itself lives in git (k8s/observability/dashboards/) and is turned into a ConfigMap by
+# kustomization.yaml — so the dashboard survives a Grafana rebuild instead of existing only in
+# someone's browser session. allowUiUpdates is false on purpose: edit the JSON in git, not the UI
+# copy (UI edits to a provisioned dashboard can't be saved, and would be lost on restart anyway).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-provider
+  namespace: observability
+data:
+  provider.yaml: |
+    apiVersion: 1
+    providers:
+      - name: git-managed
+        type: file
+        disableDeletion: true
+        allowUiUpdates: false
+        options:
+          path: /etc/grafana/dashboards
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: grafana-data
+  namespace: observability
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana
+  namespace: observability
+spec:
+  selector:
+    app: grafana
+  ports:
+    - { name: http, port: 3000, targetPort: 3000 }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana
+  namespace: observability
+  labels:
+    app: grafana
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: grafana
+  template:
+    metadata:
+      labels:
+        app: grafana
+    spec:
+      securityContext:
+        # 472/0 is exactly what the official image's own Dockerfile bakes in (confirmed by
+        # reading it, not assumed) — not an arbitrary pick.
+        runAsNonRoot: true
+        runAsUser: 472
+        runAsGroup: 0
+        fsGroup: 472
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: grafana
+          image: grafana/grafana:12.4.13@sha256:41bbc1b5e04416f81891806076db2a2ff60a5d4da5f78d36a88b033a8c199185
+          ports:
+            - { containerPort: 3000, name: http }
+          env:
+            - name: GF_SECURITY_ADMIN_USER
+              valueFrom: { secretKeyRef: { name: grafana-admin, key: admin-user } }
+            - name: GF_SECURITY_ADMIN_PASSWORD
+              valueFrom: { secretKeyRef: { name: grafana-admin, key: admin-password } }
+            # No anonymous/signup access — this is a single-admin homelab tool, not a
+            # multi-tenant install.
+            - { name: GF_USERS_ALLOW_SIGN_UP, value: "false" }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            # 384Mi -> 512Mi: it sat at ~81% of 384Mi right after startup with zero dashboards,
+            # and now renders panels. Raised before it gets OOM-killed, not after.
+            limits: { cpu: 500m, memory: 512Mi }
+          readinessProbe:
+            httpGet: { path: /api/health, port: 3000 }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /api/health, port: 3000 }
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/grafana }
+            - { name: datasources, mountPath: /etc/grafana/provisioning/datasources }
+            - { name: dashboard-provider, mountPath: /etc/grafana/provisioning/dashboards }
+            - { name: dashboards, mountPath: /etc/grafana/dashboards }
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - { name: data, persistentVolumeClaim: { claimName: grafana-data } }
+        - { name: datasources, configMap: { name: grafana-datasources } }
+        - { name: dashboard-provider, configMap: { name: grafana-dashboard-provider } }
+        - { name: dashboards, configMap: { name: grafana-dashboards } }
+        - { name: tmp, emptyDir: { medium: Memory, sizeLimit: 64Mi } }

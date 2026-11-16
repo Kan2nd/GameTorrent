@@ -24,33 +24,31 @@
     </label>
     <button type="submit"><span class="sprite" data-sprite="play"></span>Sign in</button>
     <p id="loginError" class="error" hidden></p>
+    <p id="loginNotice" class="muted" hidden></p>
+    <button type="button" id="showSignupBtn" class="ghost-btn" hidden>New player? Create an account</button>
+  </form>
+
+  <form id="signupForm" class="login-card" hidden>
+    <div class="login-logo">
+      <span class="sprite" data-sprite="cartLogo"></span>
+      <h1 class="logo-text">NEW<span>PLAYER</span></h1>
+    </div>
+    <p id="signupModeText" class="muted"></p>
+    <label>Username
+      <input type="text" id="signupUsername" autocomplete="username" minlength="3" maxlength="32" pattern="[A-Za-z0-9_.\-]{3,32}" required>
+    </label>
+    <label>Password (12-128 characters)
+      <input type="password" id="signupPassword" autocomplete="new-password" minlength="12" maxlength="128" required>
+    </label>
+    <label>Repeat password
+      <input type="password" id="signupPassword2" autocomplete="new-password" minlength="12" maxlength="128" required>
+    </label>
+    <button type="submit"><span class="sprite" data-sprite="play"></span>Create account</button>
+    <p id="signupError" class="error" hidden></p>
+    <button type="button" id="showLoginBtn" class="ghost-btn">Back to sign in</button>
   </form>
 
   <script src="/sprites.js"></script>
-  <script>
-    const form = document.getElementById('loginForm');
-    const errorEl = document.getElementById('loginError');
-
-    form.addEventListener('submit', async (e) => {
-      e.preventDefault();
-      errorEl.hidden = true;
-      const username = document.getElementById('username').value;
-      const password = document.getElementById('password').value;
-
-      const res = await fetch('/api/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username, password }),
-      });
-
-      if (res.ok) {
-        window.location.href = '/';
-      } else {
-        const data = await res.json().catch(() => ({}));
-        errorEl.textContent = data.error || 'Sign in failed';
-        errorEl.hidden = false;
-      }
-    });
-  </script>
+  <script src="/login.js"></script>
 </body>
 </html>

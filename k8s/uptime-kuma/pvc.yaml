@@ -1,0 +1,13 @@
+# Uptime Kuma's /app/data (kuma.db SQLite + its WAL, screenshots, uploads). ~700K today.
+# Same local-path caveats as ../webui/pvc.yaml.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: uptime-kuma-data
+  namespace: gametorrent
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 1Gi

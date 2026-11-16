@@ -3,6 +3,15 @@ downloads/
 roms/**/*
 !roms/.gitkeep
 webui/data/*
+# k8s/webui/secret.yaml, k8s/argocd/repo-secret.yaml, k8s/observability/grafana-secret.yaml and
+# k8s/postgres/secret.yaml are the real-values copies of their .example.yaml templates — never
+# commit any of them.
+k8s/webui/secret.yaml
+k8s/postgres/secret.yaml
+k8s/argocd/repo-secret.yaml
+k8s/observability/grafana-secret.yaml
+*.kubeconfig
+kubeconfig
 !webui/data/.gitkeep
 .scratch/
 credentials.md
@@ -10,3 +19,6 @@ cicd/gitops/compose.env
 *.log
 .DS_Store
 apps/desktop/src-tauri/target/
+
+# Local security-audit notes (describe live-infra weaknesses; keep off GitLab/GitHub)
+log/

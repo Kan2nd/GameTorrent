@@ -4,7 +4,7 @@
 #
 # This deploys Komodo itself (the GitOps controller), not GameTorrent.
 # It's a one-time manual step on kan2server — see docs/GITOPS.md. Once
-# it's up, Komodo takes over deploying webui/docker-compose.yml from
+# it's up, Komodo takes over deploying docker/webui-compose.yml from
 # this repo via cicd/gitops/stacks.toml.
 #
 # Uses FerretDB (Postgres-backed, MongoDB-wire-compatible), not MongoDB

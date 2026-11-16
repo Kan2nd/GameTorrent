@@ -1,0 +1,19 @@
+# PostgreSQL for the webui. Deployed as part of the gametorrent-webui Argo CD app (pulled in by
+# ../webui/kustomization.yaml), so the app and its database always roll out together.
+#
+# secret.yaml is NOT listed (same reason as webui's: it's gitignored, applied by hand once; see
+# secret.example.yaml). The ConfigMap is generated from init-roles.sql so that file stays the one
+# source of truth (CI runs the same file against its test database).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: gametorrent
+resources:
+  - statefulset.yaml
+  - service.yaml
+configMapGenerator:
+  - name: postgres-init
+    files:
+      - init-roles.sql
+      - 10-gametorrent-roles.sh
+    options:
+      disableNameSuffixHash: true

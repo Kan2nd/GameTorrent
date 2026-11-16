@@ -7,7 +7,7 @@ Goal: **never hit "Merge blocked: Merge conflicts must be resolved" again.**
 1. Work and commit on `dev`. Push `dev` only.
 2. The user reviews the merge request and merges `dev` -> `main` in GitLab.
    **Never merge, push, rebase or force-push `main` yourself.** Merging `main`
-   is the deploy trigger (Komodo webhook), see `docs/CLOUDFLARE_TUNNEL.md`.
+   is the deploy trigger (Argo CD polling), see `docs/K8S_MIGRATION.md`.
 3. Update the docs in the same commit as the code (`docs/PROJECT_STRUCTURE.md`
    is canonical).
 4. Never commit secrets (`credentials.md`, tokens, `webui/data/`).
@@ -68,7 +68,7 @@ grep -n '^<<<<<<<\|^=======\|^>>>>>>>' <file>
 
 Confirm GitLab agrees:
 `GET /projects/:id/merge_requests/:iid` -> `has_conflicts:false`,
-`detailed_merge_status:"mergeable"` (token handling: `docs/CLOUDFLARE_TUNNEL.md` step 4).
+`detailed_merge_status:"mergeable"`.
 
 ## Best long-term prevention (tell the user)
 

@@ -1,0 +1,27 @@
+# kubectl apply -k k8s/webui/
+#
+# secret.yaml is deliberately NOT listed. It's gitignored (real credentials) and applied once by
+# hand: `kubectl apply -f k8s/webui/secret.yaml` (see secret.example.yaml / k8s/README.md).
+# It used to be listed here to fail loudly on a missing file — but Argo CD renders this
+# kustomization from a git checkout, where secret.yaml can never exist, so listing it would make
+# every Argo CD sync fail with "no such file". Listing resources explicitly (rather than
+# deleting this file) is also what keeps Argo CD from picking up secret.example.yaml's
+# placeholder values and overwriting the real Secret.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: gametorrent
+# The webui image is pinned by digest, here and only here. `node cicd/scripts/pin-webui-image.js`
+# rewrites the digest line (and the comment above it) after a main build; see docs/CI_CD.md
+# "Releasing". Argo CD sees the changed digest, rolls the pod, and the previous digest is one
+# `git revert` away. The tag in deployment.yaml is just a placeholder that this replaces.
+images:
+  - name: registry.gitlab.com/kannguyen3105/gametorrent/webui
+    # pinned-from: commit c3bd9186, built 2026-11-16
+    digest: sha256:72ed7936aa21106962e1bd03de949100c51cb828a5945dc5de57b211d016dbf4
+resources:
+  - pvc.yaml
+  - deployment.yaml
+  - service.yaml
+  # The webui's database, in its own folder but deployed by this same Argo CD app, so the app and
+  # its database always roll out together (see ../postgres/kustomization.yaml).
+  - ../postgres

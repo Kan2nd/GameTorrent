@@ -1,0 +1,128 @@
+# Loki in "single-binary" mode (-target=all) — one process does ingestion, storage, and
+# querying together. That's the right shape for one node; the microservices split (separate
+# ingester/querier/distributor Deployments) only earns its complexity at a scale this project
+# isn't at. Storage is local filesystem on a PVC (same local-path pattern as every other PVC in
+# this repo), not S3/GCS object storage — again, proportionate to one node, not a real reason
+# to add a cloud dependency.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: loki-config
+  namespace: observability
+data:
+  local-config.yaml: |
+    auth_enabled: false
+    server:
+      http_listen_port: 3100
+    common:
+      path_prefix: /loki
+      storage:
+        filesystem:
+          chunks_directory: /loki/chunks
+          rules_directory: /loki/rules
+      replication_factor: 1
+      ring:
+        kvstore:
+          store: inmemory
+    schema_config:
+      configs:
+        - from: 2024-01-01
+          store: tsdb
+          object_store: filesystem
+          schema: v13
+          index:
+            prefix: index_
+            period: 24h
+    limits_config:
+      # 7 days, not indefinite — this is "enough to debug something that happened yesterday",
+      # not a compliance log retention policy. Raise it if you actually want longer history;
+      # just remember the PVC size below needs to grow to match.
+      retention_period: 168h
+      reject_old_samples: true
+      reject_old_samples_max_age: 168h
+    compactor:
+      working_directory: /loki/compactor
+      retention_enabled: true
+      delete_request_store: filesystem
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: loki-data
+  namespace: observability
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: loki
+  namespace: observability
+spec:
+  selector:
+    app: loki
+  ports:
+    - { name: http, port: 3100, targetPort: 3100 }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: loki
+  namespace: observability
+  labels:
+    app: loki
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate # ReadWriteOnce PVC — same reasoning as every other single-replica app here
+  selector:
+    matchLabels:
+      app: loki
+  template:
+    metadata:
+      labels:
+        app: loki
+    spec:
+      securityContext:
+        # 10001 is the uid baked into the official loki image's own Dockerfile (user "loki") —
+        # not an arbitrary choice, matching what the image already expects to run as.
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: loki
+          image: grafana/loki:3.7.9@sha256:0db216b630ae1f348a1584c67f3cead8b4c1fc839169a39501db664744158e28
+          args: ["-config.file=/etc/loki/local-config.yaml"]
+          ports:
+            - { containerPort: 3100, name: http }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { cpu: "1", memory: 512Mi }
+          readinessProbe:
+            httpGet: { path: /ready, port: 3100 }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /ready, port: 3100 }
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          volumeMounts:
+            - { name: config, mountPath: /etc/loki }
+            - { name: data, mountPath: /loki }
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - { name: config, configMap: { name: loki-config } }
+        - { name: data, persistentVolumeClaim: { claimName: loki-data } }
+        - { name: tmp, emptyDir: { medium: Memory, sizeLimit: 64Mi } }

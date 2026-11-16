@@ -94,7 +94,9 @@
             },
             "destSubfolder": {
               "type": "string",
-              "description": "Subfolder appended to ./roms/<platform>/ for this game's extracted files."
+              "pattern": "^[A-Za-z0-9._-]{1,128}$",
+              "not": { "enum": [".", ".."] },
+              "description": "Subfolder appended to ./roms/<platform>/ for this game's extracted files. A single plain name — no path separators or dot-segments."
             }
           }
         },

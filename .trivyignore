@@ -1,0 +1,28 @@
+# Accepted risks for Trivy (CI dependency + image scans). Every entry needs: WHY it is accepted,
+# the evidence, and an expiry so it gets re-reviewed instead of ignored forever. Trivy stops
+# honouring an entry after its exp: date, which turns CI red again on purpose.
+# Reviewed 2026-10-01 — see log/M5-supply-chain.md (local audit notes).
+
+# extract-zip 2.0.1 — symlink entries can write outside the target folder. No fixed release exists.
+# MITIGATED in poc/pipeline.js: safeExtractZip() refuses any zip containing a symlink entry, and
+# extract-zip itself already rejects "../" entry names. Covered by cicd/tests/security-selftest.js.
+CVE-2026-56876 exp:2027-01-01
+GHSA-jmr9-qjv8-65gv exp:2027-01-01
+CVE-2026-19693 exp:2027-01-01
+GHSA-7pqw-9j4j-h8q3 exp:2027-01-01
+
+# ip (via webtorrent 1.x -> bittorrent-tracker / ip-set) — isPublic() misclassifies some addresses.
+# NOT REACHABLE: webtorrent only loads ip-set when a `blocklist` option is passed (GameTorrent never
+# does), and bittorrent-tracker uses `ip` only in its tracker-SERVER code (lib/server/parse-udp.js);
+# GameTorrent is purely a client. Proper fix = webtorrent 3.x (ESM-only major) — tracked in log/M5.
+CVE-2024-29415 exp:2027-01-01
+GHSA-2p57-rm9w-gvfp exp:2027-01-01
+
+# KSV-0024 — k8s/webui/deployment.yaml sets a Pod hostPort (3000). Deliberate, not an oversight:
+# keeps the k3s deployment's :3000 reachable at the same address/bookmarks as the Docker
+# deployment it's meant to replace, on a single-node cluster. Revisit (Ingress/LoadBalancer
+# instead) before any multi-node move — see k8s/webui/deployment.yaml's own comment on that port.
+# Rule-ID ignore here, not an inline `# trivy:ignore:` comment: verified (pinned
+# aquasec/trivy:0.74.0, tested locally) that this specific rule doesn't honor an inline comment
+# for Kubernetes manifests in this version, at any position tried.
+KSV-0024 exp:2027-01-01

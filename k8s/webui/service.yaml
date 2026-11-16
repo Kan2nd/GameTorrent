@@ -1,0 +1,15 @@
+# ClusterIP, not NodePort: external access goes through the Deployment's hostPort (see
+# deployment.yaml's comment) to keep the existing :3000 bookmarks working. This Service exists
+# for in-cluster DNS (e.g. if something else in the cluster ever needs to reach the webui) and
+# so Argo CD's health checks have a normal Service to look at.
+apiVersion: v1
+kind: Service
+metadata:
+  name: gametorrent-webui
+  namespace: gametorrent
+spec:
+  selector:
+    app: gametorrent-webui
+  ports:
+    - port: 3000
+      targetPort: 3000

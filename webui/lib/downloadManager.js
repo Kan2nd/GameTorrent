@@ -1,7 +1,7 @@
 /**
- * In-memory job tracking around pipeline.runJob(), plus a JSON-file history
- * so completed/failed jobs survive a server restart (in-progress jobs do
- * not — acceptable for this scale of tool; see README for the tradeoff).
+ * In-memory job tracking around pipeline.runJob(), plus a history in the
+ * `download_jobs` table so completed/failed jobs survive a server restart
+ * (in-progress jobs do not; acceptable for this scale of tool).
  *
  * Each job gets its own EventEmitter passed into pipeline.runJob(); we
  * listen for 'log'/'progress' here and just accumulate them onto the job
@@ -10,33 +10,35 @@
 
 'use strict';
 
-const fs = require('fs');
-const path = require('path');
 const crypto = require('crypto');
 const { EventEmitter } = require('events');
 const pipeline = require('../../poc/pipeline');
+const db = require('../db');
 
-const DATA_DIR = path.join(__dirname, '..', 'data');
-const HISTORY_PATH = path.join(DATA_DIR, 'downloads.json');
 const MAX_LOG_LINES = 500;
 
 const jobs = new Map(); // id -> job record, newest first is handled at read time
 const emitters = new Map(); // id -> EventEmitter of still-running jobs (used to cancel them)
 
-function loadHistory() {
-  if (!fs.existsSync(HISTORY_PATH)) return;
-  try {
-    const saved = JSON.parse(fs.readFileSync(HISTORY_PATH, 'utf8'));
-    for (const job of saved) jobs.set(job.id, job);
-  } catch {
-    // corrupt/missing history file — start fresh rather than crash the server
-  }
+/** Loads finished jobs from the database into memory. Called once at startup. */
+async function loadHistory() {
+  const { rows } = await db.query('select record from download_jobs');
+  for (const r of rows) jobs.set(r.record.id, r.record);
 }
 
-function persistHistory() {
-  fs.mkdirSync(DATA_DIR, { recursive: true });
-  const finished = [...jobs.values()].filter((j) => j.status === 'done' || j.status === 'error');
-  fs.writeFileSync(HISTORY_PATH, JSON.stringify(finished, null, 2));
+/** Saves one finished job. Never throws: a failed write is logged, the job stays in memory. */
+function saveJob(job) {
+  db.query(
+    `insert into download_jobs (id, status, record, scan_skipped, started_at, finished_at) values ($1, $2, $3, $4, $5, $6)
+     on conflict (id) do update set status = excluded.status, record = excluded.record, finished_at = excluded.finished_at`,
+    [job.id, job.status, job, !!job.scanSkipped, job.startedAt, job.finishedAt],
+  ).catch((err) => console.error(`saving job ${job.id} failed:`, err.message));
+}
+
+function forgetJobs(ids) {
+  if (!ids.length) return;
+  db.query('delete from download_jobs where id = any($1::uuid[])', [ids])
+    .catch((err) => console.error('deleting job history failed:', err.message));
 }
 
 function toPublicJob(job) {
@@ -55,6 +57,19 @@ function listFinishedJobs() {
   return listJobs().filter((j) => j.status === 'done');
 }
 
+/**
+ * A game was moved from roms/<oldPlatform>/<folder> to roms/<newPlatform>/<folder> (an admin named the console of an
+ * "unknown" download). Updates the finished-job records that point at it so the library keeps the nice title.
+ */
+function reassignPlatform(oldPlatform, newPlatform, folder, oldDir, newDir) {
+  for (const job of jobs.values()) {
+    if (job.status !== 'done' || job.platform !== oldPlatform || job.destSubfolder !== folder) continue;
+    job.platform = newPlatform;
+    if (job.romPath && job.romPath.startsWith(oldDir)) job.romPath = newDir + job.romPath.slice(oldDir.length);
+    saveJob(job);
+  }
+}
+
 function getJob(id) {
   const job = jobs.get(id);
   return job ? toPublicJob(job) : null;
@@ -67,6 +82,23 @@ function getInstalledMagnets() {
     if (job.status === 'done' && job.jobData && job.jobData.magnetUri) set.add(job.jobData.magnetUri);
   }
   return set;
+}
+
+/**
+ * Any job (still running, or already finished successfully) already fetching this exact
+ * magnet — used when approving a request to avoid starting a second, redundant download
+ * for a game someone's already getting (or already got). Ignores cancelled/errored jobs,
+ * since those aren't "in progress" and should be free to retry.
+ */
+function findJobByMagnet(magnetUri) {
+  if (!magnetUri) return null;
+  let best = null;
+  for (const job of jobs.values()) {
+    if (job.jobData && job.jobData.magnetUri === magnetUri && (isActive(job) || job.status === 'done')) {
+      if (!best || new Date(job.startedAt) > new Date(best.startedAt)) best = job;
+    }
+  }
+  return best ? toPublicJob(best) : null;
 }
 
 /**
@@ -100,6 +132,9 @@ function startDownload(input, opts, catalogGames) {
     error: null,
     romPath: null,
     canLaunch: !!jobData.emulator,
+    // Recorded so a skipped check is visible later (Library shows an UNSCANNED tag), not silent.
+    scanSkipped: !!(opts && opts.skipScan),
+    vtSkipped: !!(opts && opts.noVt),
     startedAt: new Date().toISOString(),
     finishedAt: null,
     jobData,
@@ -122,7 +157,7 @@ function startDownload(input, opts, catalogGames) {
       job.romPath = result.romPath;
       job.platform = result.platform;
       job.finishedAt = new Date().toISOString();
-      persistHistory();
+      saveJob(job);
     })
     .catch((err) => {
       emitters.delete(id);
@@ -130,7 +165,7 @@ function startDownload(input, opts, catalogGames) {
       job.status = 'error';
       job.error = err.message;
       job.finishedAt = new Date().toISOString();
-      persistHistory();
+      saveJob(job);
     });
 
   return toPublicJob(job);
@@ -148,17 +183,17 @@ function deleteJob(id) {
     if (emitter) emitter.emit('cancel');
   }
   jobs.delete(id);
-  persistHistory();
+  forgetJobs([id]);
 }
 
 /** Removes every finished (done/error) job record; running ones are left alone. Returns how many were removed. */
 function clearFinished() {
-  let removed = 0;
+  const removed = [];
   for (const [id, job] of jobs) {
-    if (!isActive(job)) { jobs.delete(id); removed++; }
+    if (!isActive(job)) { jobs.delete(id); removed.push(id); }
   }
-  persistHistory();
-  return removed;
+  forgetJobs(removed);
+  return removed.length;
 }
 
 /** Launches the emulator for an already-completed job. Only meaningful on a machine with a display — see docs/WEBUI.md. */
@@ -180,6 +215,4 @@ function launchJob(id) {
   });
 }
 
-loadHistory();
-
-module.exports = { listJobs, getJob, startDownload, launchJob, getInstalledMagnets, deleteJob, clearFinished, listFinishedJobs };
+module.exports = { reassignPlatform, loadHistory, listJobs, getJob, startDownload, launchJob, getInstalledMagnets, findJobByMagnet, deleteJob, clearFinished, listFinishedJobs };

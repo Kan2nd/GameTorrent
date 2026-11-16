@@ -10,7 +10,7 @@
 
 [[stack]]
 name = "gametorrent-webui"
-description = "GameTorrent web dashboard — deployed from webui/docker-compose.yml"
+description = "GameTorrent web dashboard — deployed from docker/webui-compose.yml"
 tags = ["gametorrent"]
 
 [stack.config]
@@ -26,11 +26,11 @@ git_account = "oauth2"
 repo = "kannguyen3105/gametorrent"
 branch = "main"
 
-run_directory = "webui"
-file_paths = ["docker-compose.yml"]
+run_directory = "docker"
+file_paths = ["webui-compose.yml"]
 
 # Required: this project has no image registry, only a local `build:`
-# context in webui/docker-compose.yml. Komodo defaults to `docker compose
+# context in docker/webui-compose.yml. Komodo defaults to `docker compose
 # pull` (assumes a registry image) — without both of these it fails with
 # "repository does not exist" even though the build itself succeeds.
 run_build = true

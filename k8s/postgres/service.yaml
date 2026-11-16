@@ -1,0 +1,17 @@
+# In-cluster only (ClusterIP, no hostPort): the database is never reachable from the LAN or
+# Tailscale. Inside the cluster, NetworkPolicy allows only the webui pod in (see
+# ../network-policies/gametorrent-allow-webui-to-postgres.yaml).
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: gametorrent
+  labels:
+    app: postgres
+spec:
+  selector:
+    app: postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: 5432

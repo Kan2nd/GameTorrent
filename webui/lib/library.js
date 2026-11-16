@@ -28,14 +28,38 @@ function romCandidates(platform, files) {
   return matches.length ? matches : files;
 }
 
-/** Absolute path of a file inside roms/<platform>/<folder>/, or null if it's missing or escapes that folder. */
+function isSafeName(s) {
+  try { pipeline.assertSafeName(s, 'name'); return true; } catch { return false; }
+}
+
+/**
+ * Absolute path of a file inside roms/<platform>/<folder>/, or null if it's missing or escapes
+ * that folder.
+ *
+ * All three checks matter. Before 2026-11-05 only `file` was checked against the folder, so a
+ * request with platform=".." and folder="webui" made the "folder" /app/webui itself, and any
+ * logged-in user could download data/users.json or data/providers.json from there.
+ * 1. platform and folder must each be one plain name (no separators, no "." or "..").
+ * 2. The folder must sit strictly inside ROMS_DIR, and the file strictly inside the folder.
+ * 3. Same check again after resolving symlinks (realpath), so a link inside a game folder can't
+ *    point back out of it.
+ */
 function resolveInstalledFile(platform, folder, file) {
   if (!platform || !folder || !file) return null;
-  const base = path.resolve(pipeline.ROMS_DIR, String(platform), String(folder));
+  if (!isSafeName(platform) || !isSafeName(folder)) return null;
+  const roms = path.resolve(pipeline.ROMS_DIR);
+  const base = path.resolve(roms, String(platform), String(folder));
   const target = path.resolve(base, String(file));
-  if (!target.startsWith(base + path.sep)) return null;
+  if (!base.startsWith(roms + path.sep) || !target.startsWith(base + path.sep)) return null;
   if (!fs.existsSync(target) || !fs.statSync(target).isFile()) return null;
-  return target;
+  let realRoms, realBase, realTarget;
+  try {
+    realRoms = fs.realpathSync(roms);
+    realBase = fs.realpathSync(base);
+    realTarget = fs.realpathSync(target);
+  } catch { return null; }
+  if (!realBase.startsWith(realRoms + path.sep) || !realTarget.startsWith(realBase + path.sep)) return null;
+  return realTarget;
 }
 
 function prettify(folder) {
@@ -45,7 +69,9 @@ function prettify(folder) {
 /** finishedJobs: completed download records, used only to recover a nicer title than the folder name. */
 function listInstalled(finishedJobs) {
   const titles = new Map();
+  const unscanned = new Set();
   for (const job of finishedJobs) {
+    if (job.scanSkipped && job.destSubfolder) unscanned.add(`${job.platform}/${job.destSubfolder}`);
     if (job.destSubfolder && job.title && job.title !== job.destSubfolder) {
       titles.set(`${job.platform}/${job.destSubfolder}`, job.title);
     }
@@ -67,6 +93,7 @@ function listInstalled(finishedJobs) {
         platform: platformEntry.name,
         folder: gameEntry.name,
         title: titles.get(`${platformEntry.name}/${gameEntry.name}`) || prettify(gameEntry.name),
+        scanSkipped: unscanned.has(`${platformEntry.name}/${gameEntry.name}`),
         size,
         romFiles: romCandidates(platformEntry.name, files),
         path: `roms/${platformEntry.name}/${gameEntry.name}`,

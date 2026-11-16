@@ -1,0 +1,9 @@
+[Unit]
+Description=Back up GameTorrent live k3s PVC data (webui, Jackett, Uptime Kuma)
+# Reads the PVC dirs straight off disk, so k3s itself doesn't have to be up — no Requires=.
+# (Used to Require docker.service back when it tarred a Docker volume; see the script header.)
+After=k3s.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/gametorrent-backup.sh

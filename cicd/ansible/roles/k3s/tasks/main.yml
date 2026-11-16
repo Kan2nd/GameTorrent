@@ -1,0 +1,190 @@
+---
+# roles/k3s/tasks/main.yml
+# Installs single-node k3s + Argo CD on a host. Separate from roles/common
+# (Docker) — both can coexist on the same host (see ../../k3s-playbook.yml
+# and inventory group [k3s_hosts]); this was verified not to port-clash with
+# the existing Docker stack on kan2server (ports checked: 22, 53, 3000,
+# 3001, 9117, 9120, 9180 already in use; k3s wants 6443 + 10250, free).
+#
+# NOT run automatically — see cicd/ansible/k3s-playbook.yml's header for
+# why this is a deliberate, separate step from the Docker provisioning.
+
+- name: Check available disk space before installing
+  ansible.builtin.shell: df --output=avail -B1 / | tail -1
+  register: disk_avail
+  changed_when: false
+
+- name: Fail early if less than 10GB free (k3s + an image registry pull + Argo CD need real headroom)
+  ansible.builtin.fail:
+    msg: >
+      Only {{ (disk_avail.stdout | trim | int / 1073741824) | round(1) }}GB free on /.
+      k3s + Argo CD + the webui image need more headroom than that — see
+      k8s/REQUIREMENTS.md before proceeding further.
+  when: (disk_avail.stdout | trim | int) < 10737418240
+
+- name: Install k3s (pinned version, server/control-plane mode, flannel disabled — Cilium is the CNI)
+  # --flannel-backend=none: don't install flannel at all (not "install then ignore" — the
+  # bridge/cni0 problem this avoids happens as soon as flannel's CNI config exists on disk).
+  # --disable-network-policy: k3s's default network-policy controller (kube-router) assumes
+  # flannel; Cilium brings and enforces its own NetworkPolicy support instead.
+  # --disable=metrics-server: k3s's own bundled copy (rancher/mirrored-metrics-server:v0.9.0)
+  # has a genuine build bug (confirmed: extracted the binary, compared Go versions against
+  # other Go binaries on the same node — this is specific to that release build, not a
+  # kernel/toolchain issue). Worse, a direct file edit to k3s's bundled manifest to work around
+  # it turned out NOT durable — k3s re-syncs that whole directory from its own embedded
+  # defaults on every restart, silently reverting the fix (confirmed hitting this for real,
+  # days later, after a routine reboot). k8s/metrics-server/ is our own replacement — version
+  # controlled, Argo CD-managed, pinned to v0.8.1 — see its deployment.yaml and docs/DEBUG.md.
+  ansible.builtin.shell: |
+    curl -sfL https://get.k3s.io | \
+      INSTALL_K3S_VERSION="{{ k3s_version }}" \
+      INSTALL_K3S_EXEC="{{ k3s_extra_exec_args }} --flannel-backend=none --disable-network-policy --disable=metrics-server --kubelet-arg=pod-max-pids={{ k3s_pod_max_pids }}" \
+      sh -
+  args:
+    creates: /usr/local/bin/k3s
+  register: k3s_install
+
+# With --flannel-backend=none there is no CNI at all yet, so the node correctly reports
+# Ready: False / "cni plugin not initialized" until Cilium is installed below — confirmed
+# hitting exactly this on 2026-10-10 the first time this task wrongly waited for Ready here.
+# This step only confirms the API server itself is up, not that networking works yet.
+- name: Wait for the k3s API server to come up
+  ansible.builtin.command: /usr/local/bin/k3s kubectl get node
+  register: k3s_api_up
+  until: k3s_api_up.rc == 0
+  retries: 20
+  delay: 5
+  changed_when: false
+
+- name: Give the SSH user their own kubectl config (so kubectl works without sudo)
+  block:
+    - name: Create ~/.kube
+      ansible.builtin.file:
+        path: "/home/{{ ansible_user }}/.kube"
+        state: directory
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: "0700"
+
+    - name: Copy k3s's kubeconfig
+      ansible.builtin.copy:
+        src: /etc/rancher/k3s/k3s.yaml
+        dest: "{{ k3s_kubeconfig_user_path }}"
+        remote_src: true
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: "0600"
+
+- name: Check whether the cilium CLI is already installed
+  ansible.builtin.command: /usr/local/bin/cilium version --client
+  register: cilium_cli_check
+  failed_when: false
+  changed_when: false
+
+- name: Install the cilium CLI (pinned version)
+  ansible.builtin.shell: |
+    set -e
+    curl -sfL -o /tmp/cilium-cli.tar.gz "https://github.com/cilium/cilium-cli/releases/download/{{ cilium_cli_version }}/cilium-linux-amd64.tar.gz"
+    tar -C /usr/local/bin -xzf /tmp/cilium-cli.tar.gz cilium
+    rm -f /tmp/cilium-cli.tar.gz
+  when: cilium_cli_check.rc != 0
+
+- name: Check whether Cilium is already installed in the cluster
+  ansible.builtin.command: /usr/local/bin/cilium status --wait=false --kubeconfig {{ k3s_kubeconfig_user_path }}
+  register: cilium_status_check
+  failed_when: false
+  changed_when: false
+
+- name: Install Cilium (pinned version) as the cluster's CNI
+  ansible.builtin.command: >
+    /usr/local/bin/cilium install --version {{ cilium_version }}
+    --kubeconfig {{ k3s_kubeconfig_user_path }}
+  when: "'Cilium:' not in cilium_status_check.stdout or 'OK' not in cilium_status_check.stdout"
+
+- name: Wait for Cilium to report fully healthy (this is what actually brings up pod networking)
+  ansible.builtin.command: >
+    /usr/local/bin/cilium status --wait --wait-duration=180s
+    --kubeconfig {{ k3s_kubeconfig_user_path }}
+  changed_when: false
+
+- name: Check whether Hubble Relay is already enabled
+  ansible.builtin.command: >
+    /usr/local/bin/cilium status --kubeconfig {{ k3s_kubeconfig_user_path }}
+  register: hubble_status_check
+  changed_when: false
+
+# Observability only (flow visibility into who's talking to whom, and anything a
+# NetworkPolicy denies) — not a policy-enforcement mechanism itself. The actual access
+# control is the NetworkPolicy objects in k8s/network-policies/. ClusterMesh (Cilium's
+# multi-cluster federation feature) is deliberately NOT enabled — this is a single-node,
+# single-cluster setup with no second cluster to mesh with, so it would connect nothing.
+- name: Enable Hubble Relay
+  ansible.builtin.command: >
+    /usr/local/bin/cilium hubble enable --kubeconfig {{ k3s_kubeconfig_user_path }}
+  when: "'Hubble Relay:' not in hubble_status_check.stdout or 'disabled' in hubble_status_check.stdout"
+
+# NOW the node can actually go Ready — Cilium is the CNI that was missing before.
+- name: Wait for k3s node to report Ready (only meaningful now that Cilium is up)
+  ansible.builtin.command: /usr/local/bin/kubectl get node -o jsonpath="{.items[0].status.conditions[?(@.type=='Ready')].status}"
+  register: k3s_ready
+  until: k3s_ready.stdout == "True"
+  retries: 20
+  delay: 5
+  changed_when: false
+
+- name: Create argocd namespace
+  ansible.builtin.command: /usr/local/bin/kubectl create namespace argocd --dry-run=client -o yaml
+  register: argocd_ns_manifest
+  changed_when: false
+
+- name: Apply argocd namespace
+  ansible.builtin.shell: "echo '{{ argocd_ns_manifest.stdout }}' | /usr/local/bin/kubectl apply -f -"
+  changed_when: true
+
+- name: Install Argo CD (pinned release manifest — see docs/K8S_MIGRATION.md)
+  # --server-side, not plain `apply`: the applicationsets.argoproj.io CRD in this manifest embeds
+  # an OpenAPI schema large enough that kubectl's client-side apply fails trying to store it in
+  # the kubectl.kubernetes.io/last-applied-configuration annotation (etcd's 262144-byte annotation
+  # limit) — confirmed hitting this for real on 2026-10-09 (log/PROGRESS.md). Server-side apply
+  # doesn't use that annotation at all, so it isn't subject to the same limit. --force-conflicts
+  # is safe here: nothing else owns these fields on a fresh/repeat apply of the same manifest.
+  ansible.builtin.command: >
+    /usr/local/bin/kubectl apply --server-side --force-conflicts -n argocd
+    -f https://raw.githubusercontent.com/argoproj/argo-cd/{{ argocd_version }}/manifests/install.yaml
+  register: argocd_apply
+  changed_when: "'serverside-applied' in argocd_apply.stdout or 'created' in argocd_apply.stdout"
+
+- name: Wait for argocd-server to roll out
+  # A fresh install briefly logs "secret argocd-redis not found" while argocd-server/
+  # application-controller race the redis Deployment on first boot — self-resolves within
+  # seconds (observed 2026-10-09: pods went from CreateContainerConfigError to Running 1/1,
+  # 0 restarts, in under a minute with no intervention). The 180s timeout + 3 retries below
+  # ride through that; a real, non-transient failure still fails loudly after all of them.
+  ansible.builtin.command: /usr/local/bin/kubectl -n argocd rollout status deployment/argocd-server --timeout=180s
+  register: argocd_rollout
+  until: argocd_rollout.rc == 0
+  retries: 3
+  delay: 15
+  changed_when: false
+
+- name: Create the gametorrent namespace (app will live here, not in argocd's)
+  ansible.builtin.command: /usr/local/bin/kubectl create namespace gametorrent --dry-run=client -o yaml
+  register: gt_ns_manifest
+  changed_when: false
+
+- name: Apply gametorrent namespace
+  ansible.builtin.shell: "echo '{{ gt_ns_manifest.stdout }}' | /usr/local/bin/kubectl apply -f -"
+  changed_when: true
+
+- name: Print how to reach the Argo CD UI
+  ansible.builtin.debug:
+    msg: >-
+      Argo CD installed. Deliberately NOT exposed via NodePort/Ingress (see log/C2 —
+      the whole point of that fix was not putting an admin panel on a public port).
+      On the VM, kubectl defaults to the root-only /etc/rancher/k3s/k3s.yaml, not
+      ~/.kube/config — export KUBECONFIG={{ k3s_kubeconfig_user_path }} first (every
+      kubectl task above runs as root via `become`, so it never needed this).
+      Reach the UI with: ssh -L 8080:localhost:8080 {{ ansible_user }}@{{ ansible_host | default(inventory_hostname) }}
+      then (with KUBECONFIG exported): kubectl -n argocd port-forward svc/argocd-server 8080:443
+      Initial admin password: kubectl -n argocd get secret argocd-initial-admin-secret
+      -o jsonpath="{.data.password}" | base64 -d

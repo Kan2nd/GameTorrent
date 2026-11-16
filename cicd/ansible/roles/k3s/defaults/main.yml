@@ -1,0 +1,32 @@
+---
+# Pinned versions — see log/M5-supply-chain.md for why "latest" is avoided
+# throughout this project. Bump these deliberately, not via a moving channel.
+k3s_version: "v1.37.1+k3s1"
+argocd_version: "v3.5.4"
+
+# Cilium, not flannel (k3s's default) — switched 2026-10-10 after flannel's bridge (cni0)
+# failed to get its gateway IP assigned on this exact VM (cni0 came up with no IPv4 at
+# all, so the host had no route to the pod subnet at all — not an iptables block, kubelet's
+# own health-check probes to pod IPs just timed out, crash-looping coredns/traefik/metrics-
+# server for 22h unnoticed). Cilium's eBPF datapath doesn't use a Linux bridge for this, so
+# it doesn't share that specific failure mode with Docker's own bridge/iptables management
+# on the same host. See log/ (local audit notes) for the full incident writeup.
+cilium_version: "v1.20.2"
+cilium_cli_version: "v0.20.1"
+
+# k3s ships Traefik (ingress) and a local-path storage provisioner by default.
+# Both are wanted here (single-node, no existing ingress), so nothing is disabled.
+# cluster-cidr/service-cidr are left at k3s defaults — no conflict found with this
+# VM's own networks (192.0.2.0/24 LAN, 100.64.0.0/10 Tailscale) during planning.
+# Left empty deliberately: no extra apiserver/controller flags beyond k3s's own
+# secure-by-default settings, until there's a specific, checked reason to add one
+# (an unverified flag here is exactly the kind of thing the audit was about).
+k3s_extra_exec_args: ""
+
+# Per-pod process-count ceiling, cluster-wide (the k8s equivalent of Docker Compose's
+# `pids_limit: 256` — there is no per-Pod manifest field for this; the kubelet flag is
+# the nearest equivalent and applies to every pod on the node).
+k3s_pod_max_pids: "256"
+
+# Where kubectl config is placed for the SSH user (so kubectl works without sudo).
+k3s_kubeconfig_user_path: "/home/{{ ansible_user }}/.kube/config"

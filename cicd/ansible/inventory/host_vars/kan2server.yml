@@ -1,0 +1,17 @@
+---
+# kan2server's IP is resolved at playbook run time instead of hardcoded —
+# see ../scripts/resolve-vm-ip.sh for why (VMware DHCP lease, same MAC,
+# IP can change across a reboot that spans a lease expiry).
+#
+# Deliberately anchored to inventory_dir, not playbook_dir: playbook_dir is
+# wherever the *playbook* file happens to live (could be anything, any
+# location), but inventory_dir is always this file's own parent's sibling
+# (../inventory/hosts.ini next to ../scripts/) no matter which playbook or
+# ad-hoc command loads this inventory — confirmed hitting exactly this bug
+# with playbook_dir when testing from a playbook outside cicd/ansible/.
+kan2server_mac: "<vm-mac>"
+# The `quote` filter (shlex_quote), not manual string concatenation: this repo
+# lives under a Windows path with spaces (`Sem alone`, `Project GameTorrent`) —
+# the `pipe` lookup hands the string straight to `/bin/sh -c`, which
+# word-splits on those spaces unless the path is shell-quoted.
+ansible_host: "{{ lookup('pipe', (inventory_dir ~ '/../scripts/resolve-vm-ip.sh') | quote ~ ' ' ~ kan2server_mac) }}"

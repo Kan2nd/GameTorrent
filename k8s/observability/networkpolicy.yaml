@@ -1,0 +1,211 @@
+# Closes the gap found in the 2026-10-26 audit: Loki runs with auth_enabled: false, and with no
+# NetworkPolicy in this namespace a pod in argocd or kube-system could open a connection to
+# loki:3100 — reading every pod's logs, or injecting fake ones. Same default-deny-then-explicit-
+# allow shape as k8s/network-policies/ (see gametorrent-default-deny.yaml for the reasoning).
+#
+# What legitimately talks to what here — everything else stays denied:
+#   Alloy   -> Loki:3100        (pushes logs)
+#   Grafana -> Loki:3100        (queries logs)
+#   Alloy   -> kube-apiserver   (discovers pods and reads their logs — see the Cilium policy below)
+#   Grafana -> Prometheus:9090  (queries metrics)
+#   Prometheus -> kube-state-metrics:8080, the node's kubelet:10250, kube-apiserver
+#   kube-state-metrics -> kube-apiserver
+#   everyone -> CoreDNS:53
+# Loki needs no egress at all (filesystem storage, in-memory ring); Alloy and Grafana accept no
+# inbound connections from other pods. Grafana's UI is reached via `kubectl port-forward`, which
+# goes through the kubelet rather than the pod network, so it is unaffected.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: observability
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns
+  namespace: observability
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+---
+# Both halves of each path are stated on purpose: a NetworkPolicy only takes effect where the
+# sender's egress AND the receiver's ingress both allow it.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: loki-accepts-alloy-and-grafana
+  namespace: observability
+spec:
+  podSelector:
+    matchLabels:
+      app: loki
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - { key: app, operator: In, values: [alloy, grafana] }
+      ports:
+        - { protocol: TCP, port: 3100 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: alloy-and-grafana-egress-to-loki
+  namespace: observability
+spec:
+  podSelector:
+    matchExpressions:
+      - { key: app, operator: In, values: [alloy, grafana] }
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: loki
+      ports:
+        - { protocol: TCP, port: 3100 }
+---
+# The one rule a plain NetworkPolicy can't express safely. The API server runs on the node itself,
+# on its DHCP-leased LAN IP (which has already changed once on this VM), so an ipBlock would
+# silently break log collection after the next lease change. Cilium's own `kube-apiserver` entity
+# tracks wherever the API server actually is. Cilium policies combine with the standard ones
+# above (allows are unioned), so this only adds Alloy -> API server.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: alloy-to-apiserver
+  namespace: observability
+spec:
+  endpointSelector:
+    matchLabels:
+      app: alloy
+  egress:
+    - toEntities:
+        - kube-apiserver
+---
+# ── metrics paths (added with Prometheus + kube-state-metrics) ─────────────────────────────────
+# Grafana -> Prometheus. Both halves stated, as above.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: prometheus-accepts-grafana
+  namespace: observability
+spec:
+  podSelector:
+    matchLabels:
+      app: prometheus
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: grafana
+      ports:
+        - { protocol: TCP, port: 9090 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: grafana-egress-to-prometheus
+  namespace: observability
+spec:
+  podSelector:
+    matchLabels:
+      app: grafana
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: prometheus
+      ports:
+        - { protocol: TCP, port: 9090 }
+---
+# Prometheus -> kube-state-metrics (its only in-cluster scrape target; the rest are the kubelet).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: kube-state-metrics-accepts-prometheus
+  namespace: observability
+spec:
+  podSelector:
+    matchLabels:
+      app: kube-state-metrics
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: prometheus
+      ports:
+        - { protocol: TCP, port: 8080 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: prometheus-egress-to-kube-state-metrics
+  namespace: observability
+spec:
+  podSelector:
+    matchLabels:
+      app: prometheus
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: kube-state-metrics
+      ports:
+        - { protocol: TCP, port: 8080 }
+---
+# The two destinations a plain NetworkPolicy can't express safely — both live on the NODE, whose
+# LAN IP is DHCP-leased and has already changed once on this VM. Cilium's entities track the real
+# location instead of a hardcoded address:
+#   kube-apiserver -> Prometheus (node discovery) and kube-state-metrics (list/watch objects)
+#   host           -> Prometheus scraping the kubelet at <node IP>:10250; port-restricted so this
+#                     is NOT a general "reach the host" hole
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: metrics-to-apiserver
+  namespace: observability
+spec:
+  endpointSelector:
+    matchExpressions:
+      - { key: app, operator: In, values: [prometheus, kube-state-metrics] }
+  egress:
+    - toEntities:
+        - kube-apiserver
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: prometheus-to-kubelet
+  namespace: observability
+spec:
+  endpointSelector:
+    matchLabels:
+      app: prometheus
+  egress:
+    - toEntities:
+        - host
+        - remote-node
+      toPorts:
+        - ports:
+            - { port: "10250", protocol: TCP }

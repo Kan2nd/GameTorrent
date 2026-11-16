@@ -1,0 +1,17 @@
+# Baseline for the whole `gametorrent` namespace: deny everything, then every other file in this
+# folder punches one specific, named hole. Before this, a fresh k3s cluster allows every pod to
+# reach every other pod with no restriction at all (docs/K8S_MIGRATION.md's own "What's new to
+# security-review" note flagged this as the gap). This is what actually closes it.
+#
+# Deliberately NOT touching kube-system or anything cluster-wide — CoreDNS, Traefik, Cilium's
+# own components, local-path-provisioner. Scoped to this one namespace, where the goal is
+# bounded: if any of the three apps here gets fully compromised (RCE), what can it actually
+# reach from there.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: gametorrent
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]

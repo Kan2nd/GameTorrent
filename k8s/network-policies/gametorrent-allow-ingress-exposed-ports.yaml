@@ -1,0 +1,53 @@
+# All three apps are deliberately reachable from the LAN/Tailscale via hostPort — that's an
+# accepted, documented design (k8s/webui/deployment.yaml's own comments, .trivyignore's
+# KSV-0024 entries), not something to lock down. What default-deny-all.yaml's blanket ingress
+# deny WOULD otherwise break if left unaddressed, and what this file restores: reachability on
+# each app's own real port, from anywhere (hostPort traffic and kubelet's own probes both need
+# this — kubelet probes the pod's containerPort directly, bypassing the hostPort NAT entirely,
+# so an ipBlock of 0.0.0.0/0 is what covers both the node itself and real external clients).
+#
+# The actual hardening this adds over "no NetworkPolicy at all": only the intended port is
+# reachable on each pod — nothing else a container might accidentally expose (a debug port, a
+# metrics endpoint meant to be internal-only) is reachable from outside the namespace, since
+# there's no matching allow rule for it once default-deny is in place.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-webui-port
+  namespace: gametorrent
+spec:
+  podSelector:
+    matchLabels:
+      app: gametorrent-webui
+  policyTypes: [Ingress]
+  ingress:
+    - from: [{ ipBlock: { cidr: 0.0.0.0/0 } }]
+      ports: [{ protocol: TCP, port: 3000 }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-jackett-port
+  namespace: gametorrent
+spec:
+  podSelector:
+    matchLabels:
+      app: jackett
+  policyTypes: [Ingress]
+  ingress:
+    - from: [{ ipBlock: { cidr: 0.0.0.0/0 } }]
+      ports: [{ protocol: TCP, port: 9117 }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-kuma-port
+  namespace: gametorrent
+spec:
+  podSelector:
+    matchLabels:
+      app: uptime-kuma
+  policyTypes: [Ingress]
+  ingress:
+    - from: [{ ipBlock: { cidr: 0.0.0.0/0 } }]
+      ports: [{ protocol: TCP, port: 3001 }]

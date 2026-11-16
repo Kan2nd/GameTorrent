@@ -1,0 +1,92 @@
+# Our OWN copy, GitOps-managed through Argo CD like every other app in this cluster — NOT
+# relying on k3s's bundled addon anymore. docs/K8S_MIGRATION.md and docs/DEBUG.md have the full
+# story: k3s's bundled metrics-server (rancher/mirrored-metrics-server:v0.9.0) crash-looped for
+# days with a genuine build bug (confirmed by extracting the binary and comparing Go versions —
+# a bug specific to that release build, not this environment). Fixed once by editing k3s's own
+# bundled manifest file directly on the VM — which turned out to be NOT durable: k3s re-syncs
+# that entire directory from its own embedded defaults on every restart, silently reverting the
+# fix (confirmed hitting this for real after a routine reboot, days later). The actual fix:
+# `--disable=metrics-server` added to k3s's own systemd ExecStart
+# (/etc/systemd/system/k3s.service on the VM — not tracked in this repo, it's a VM-level
+# systemd unit, same category as the GRUB possible_cpus change; see docs/DEBUG.md) stops k3s
+# from shipping its own copy at all, and this folder is what replaces it — version-controlled,
+# Argo CD-managed, same as webui/jackett/uptime-kuma.
+#
+# Pinned by digest (log/M5: pin, don't float) to the exact v0.8.1 build already confirmed
+# working (doesn't hit the Go 1.26.4 panic v0.9.0's build does — v0.8.1 is built with go1.24.12).
+#
+# Otherwise straight from upstream's own components.yaml, which is ALREADY hardened by default
+# (non-root, read-only rootfs, all caps dropped) — no work needed there, unlike jackett/
+# uptime-kuma. The one addition: --kubelet-insecure-tls. k3s's kubelet serving certs aren't
+# signed by a CA metrics-server's container trusts out of the box; without this flag it starts
+# fine but can't actually scrape any kubelet, which is k3s's own documented reason every k3s
+# install needs this flag (not a security downgrade specific to this cluster).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    k8s-app: metrics-server
+  name: metrics-server
+  namespace: kube-system
+spec:
+  selector:
+    matchLabels:
+      k8s-app: metrics-server
+  strategy:
+    rollingUpdate:
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        k8s-app: metrics-server
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: metrics-server
+          image: registry.k8s.io/metrics-server/metrics-server@sha256:b2d2efaf5ac3b366ed0f839d2412a2c4279d4fc2a2a733f12c52133faed36c41
+          imagePullPolicy: IfNotPresent
+          args:
+            - --cert-dir=/tmp
+            - --secure-port=10250
+            - --kubelet-preferred-address-types=InternalIP,ExternalIP,Hostname
+            - --kubelet-use-node-status-port
+            - --metric-resolution=15s
+            - --kubelet-insecure-tls
+          ports:
+            - containerPort: 10250
+              name: https
+              protocol: TCP
+          livenessProbe:
+            httpGet: { path: /livez, port: https, scheme: HTTPS }
+            periodSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            httpGet: { path: /readyz, port: https, scheme: HTTPS }
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 200Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 1000
+            seccompProfile:
+              type: RuntimeDefault
+          volumeMounts:
+            - { name: tmp-dir, mountPath: /tmp }
+      nodeSelector:
+        kubernetes.io/os: linux
+      priorityClassName: system-cluster-critical
+      serviceAccountName: metrics-server
+      volumes:
+        - { name: tmp-dir, emptyDir: {} }

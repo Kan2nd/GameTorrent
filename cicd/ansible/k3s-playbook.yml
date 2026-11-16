@@ -1,0 +1,22 @@
+---
+# ansible/k3s-playbook.yml
+# Run: ansible-playbook -i inventory/hosts.ini k3s-playbook.yml
+# Requires: ansible >= 2.14, passwordless SSH, passwordless sudo.
+#
+# Deliberately a SEPARATE playbook from playbook.yml (the Docker one), not an
+# added play in it: running `ansible-playbook playbook.yml` must keep doing
+# exactly what it always did. This one is only ever run by someone who
+# explicitly asks for it. See k8s/README.md and docs/K8S_MIGRATION.md before
+# running this against a real host — it installs a second container runtime
+# (containerd via k3s) and a GitOps controller (Argo CD) alongside the
+# existing Docker setup, not instead of it.
+#
+# Prerequisites checked before this was written (see k8s/REQUIREMENTS.md):
+# CPU/RAM/disk headroom, no port clashes with the existing Docker stack.
+# The role itself re-checks free disk space and fails loudly if it's tight.
+
+- name: Install k3s + Argo CD on the k3s host(s)
+  hosts: k3s_hosts
+  become: true
+  roles:
+    - k3s

@@ -1,0 +1,41 @@
+# Uptime Kuma's "GameTorrent Web UI" monitor needs to reach webui — currently still hardcoded to
+# a LAN IP (flagged in docs/K8S_MIGRATION.md, not yet fixed) but should become
+# http://gametorrent-webui.gametorrent.svc:3000/login.html, the stable in-cluster address, same
+# reasoning as Jackett's. Allowing it now either way: a LAN-IP monitor still routes through the
+# pod's own interface when the destination resolves back to itself via hostPort, so this rule is
+# correct for both the current (LAN IP) and the fixed (in-cluster DNS) monitor target.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-kuma-to-webui
+  namespace: gametorrent
+spec:
+  podSelector:
+    matchLabels:
+      app: gametorrent-webui
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: uptime-kuma
+      ports:
+        - { protocol: TCP, port: 3000 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-kuma-egress-to-webui
+  namespace: gametorrent
+spec:
+  podSelector:
+    matchLabels:
+      app: uptime-kuma
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: gametorrent-webui
+      ports:
+        - { protocol: TCP, port: 3000 }

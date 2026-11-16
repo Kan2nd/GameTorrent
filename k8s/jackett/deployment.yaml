@@ -1,0 +1,104 @@
+# Jackett (torrent-indexer proxy that GameTorrent's Search tab talks to), moved off a plain
+# `docker run` container into k3s — docs/K8S_MIGRATION.md Phase 5. Same image, same /config
+# data (so the API key GameTorrent already has saved keeps working).
+#
+# SECURITY: linuxserver.io images start their init system (s6-overlay) as root, which then
+# drops to an unprivileged user; forcing `runAsNonRoot` crashes it (`s6-applyuidgid: fatal: unable
+# to set supplementary group list`), an architectural limit, not a permissions glitch. So the
+# container starts as root but with every capability dropped except the three that startup needs:
+# CHOWN (hand /run/jackett-temp to the app user), SETUID and SETGID (drop privileges). Everything
+# else a root container normally gets (DAC_OVERRIDE, FOWNER, NET_RAW, SYS_CHROOT, KILL, MKNOD, ...)
+# is gone. The Jackett process itself has always run as uid 911 with NO capabilities (checked in
+# the live pod 2026-11-05); PUID/PGID below used to say 1000, which the read-only rootfs made
+# impossible to apply, so they now say what is actually true.
+#
+# Tested 2026-11-05 on a copy of the live config: with only SETUID+SETGID it starts but every search
+# fails ("Access to the path '/run/jackett-temp/' is denied"), which is why CHOWN is in the set; with
+# CHOWN+SETUID+SETGID a search returns the same results as before.
+#
+# KSV-0024 (hostPort) is accepted in ../../.trivyignore for the same reason as the webui's: keeps
+# the :9117 address/bookmarks identical to the Docker deployment on a single node.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: jackett
+  namespace: gametorrent
+  labels:
+    app: jackett
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate # ReadWriteOnce PVC — two pods can't both mount it
+  selector:
+    matchLabels:
+      app: jackett
+  template:
+    metadata:
+      labels:
+        app: jackett
+    spec:
+      # Never calls the k8s API — no token needed, so none gets mounted (nothing to steal via
+      # a vertical escalation if this container is ever fully compromised).
+      automountServiceAccountToken: false
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: jackett
+          # Pinned by digest (log/M5: pin, don't float) — this is exactly the image the Docker
+          # container was running when it was migrated: linuxserver/jackett v0.24.2605-ls31.
+          # Bump deliberately, not via a moving tag.
+          image: lscr.io/linuxserver/jackett@sha256:ea3c81c76febbdd1323df7f924726e21b1e155d9db02cbcb3d28afd4e5c99f39
+          ports:
+            - containerPort: 9117
+              hostPort: 9117
+          env:
+            - name: TZ
+              value: Etc/UTC
+            # The uid/gid the linuxserver image's `abc` user really has (and owns /config as).
+            # A different value can't be applied on a read-only rootfs anyway.
+            - name: PUID
+              value: "911"
+            - name: PGID
+              value: "911"
+          securityContext:
+            allowPrivilegeEscalation: false
+            # s6's own runtime state (service supervision sockets, TMPDIR) just needs somewhere
+            # writable, which /run and /tmp below provide without the whole rootfs being mutable.
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+              add: [CHOWN, SETUID, SETGID]
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+          # NOT /UI/Login: confirmed by tcpdump that it intermittently 400s under a probe's
+          # real request pattern (never reproduced via manual curl, even dozens in a row —
+          # it's specifically ASP.NET's stateful "TestCookie" consent-redirect dance, a poor
+          # fit for a probe that doesn't carry cookies between requests). /favicon.ico is a
+          # plain static file: no redirect, no cookie, no auth — a real liveness signal
+          # without the statefulness.
+          livenessProbe:
+            httpGet: { path: /favicon.ico, port: 9117 }
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet: { path: /favicon.ico, port: 9117 }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          volumeMounts:
+            - { name: config, mountPath: /config }
+            - { name: run, mountPath: /run }
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - { name: config, persistentVolumeClaim: { claimName: jackett-config } }
+        - { name: run, emptyDir: { medium: Memory, sizeLimit: 64Mi } }
+        - { name: tmp, emptyDir: { medium: Memory, sizeLimit: 128Mi } }

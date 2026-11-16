@@ -1,0 +1,142 @@
+# Grafana Alloy — the log shipper that finds every pod's logs and forwards them to Loki.
+# Deliberately NOT Promtail: Promtail has been end-of-life since 2026-03-02 (no updates, no
+# security patches), and Grafana's own docs say all new development happens in Alloy now.
+# Shipping something already EOL on day one would contradict this project's own "pin real,
+# supported versions" ethic.
+#
+# Using Alloy's API-based log collection (discovery.kubernetes + loki.source.kubernetes), NOT
+# the file-based approach (discovery.kubernetes + loki.source.file). The file-based approach
+# needs a privileged DaemonSet with hostPath access to the node's /var/log — the API approach
+# just reads logs the same way `kubectl logs` does, over the Kubernetes API, using this pod's
+# own ServiceAccount token. No host filesystem access needed at all, and since it goes through
+# the API (not a per-node log directory), a single Deployment replica sees every pod
+# cluster-wide — no need for a DaemonSet even once this cluster has more than one node.
+#
+# SECURITY NOTE on runAsUser: 473 is the uid Alloy's own Dockerfile creates for a non-root
+# user, but upstream's own comment calls this "an experimental, undocumented feature" — not a
+# guarantee the way webui's own Dockerfile user is. If this crashes with a permissions error,
+# that's not a config mistake, it's upstream's own caveat being real — same situation this repo
+# already hit with Jackett and Uptime Kuma (see k8s/jackett/deployment.yaml's comment): the fix
+# there is dropping to root (matching what the image does by default) rather than fighting it.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: alloy
+  namespace: observability
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: alloy-logs-reader
+rules:
+  # Same two permissions `kubectl logs` itself relies on: list/watch pods to discover what to
+  # tail, get on the pods/log subresource to actually read the log content.
+  - apiGroups: [""]
+    resources: [pods, namespaces]
+    verbs: [get, list, watch]
+  - apiGroups: [""]
+    resources: [pods/log]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: alloy-logs-reader
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: alloy-logs-reader
+subjects:
+  - kind: ServiceAccount
+    name: alloy
+    namespace: observability
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: alloy-config
+  namespace: observability
+data:
+  config.alloy: |
+    loki.write "default" {
+      endpoint {
+        url = "http://loki.observability.svc.cluster.local:3100/loki/api/v1/push"
+      }
+    }
+
+    // Discover every pod cluster-wide (this is API-based, not per-node — one Alloy replica
+    // sees all of them regardless of which node they're actually running on).
+    discovery.kubernetes "pod" {
+      role = "pod"
+    }
+
+    // Attach namespace/pod/container as Loki labels, so you can filter by them later
+    // (e.g. {namespace="gametorrent", container="jackett"}).
+    discovery.relabel "pod_logs" {
+      targets = discovery.kubernetes.pod.targets
+
+      rule {
+        source_labels = ["__meta_kubernetes_namespace"]
+        target_label  = "namespace"
+      }
+      rule {
+        source_labels = ["__meta_kubernetes_pod_name"]
+        target_label  = "pod"
+      }
+      rule {
+        source_labels = ["__meta_kubernetes_pod_container_name"]
+        target_label  = "container"
+      }
+    }
+
+    // Tail every discovered pod's logs through the Kubernetes API and forward to Loki.
+    loki.source.kubernetes "pod_logs" {
+      targets    = discovery.relabel.pod_logs.output
+      forward_to = [loki.write.default.receiver]
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: alloy
+  namespace: observability
+  labels:
+    app: alloy
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: alloy
+  template:
+    metadata:
+      labels:
+        app: alloy
+    spec:
+      serviceAccountName: alloy
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 473
+        runAsGroup: 473
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: alloy
+          image: grafana/alloy:v1.21.2@sha256:89a5a320168387336b9ac3c850609c3ba7757eadd4ae5f1d819deb35e9854b18
+          args:
+            - run
+            - /etc/alloy/config.alloy
+            - --storage.path=/var/lib/alloy/data
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { cpu: 500m, memory: 256Mi }
+          volumeMounts:
+            - { name: config, mountPath: /etc/alloy }
+            - { name: data, mountPath: /var/lib/alloy }
+      volumes:
+        - { name: config, configMap: { name: alloy-config } }
+        - { name: data, emptyDir: { sizeLimit: 128Mi } }

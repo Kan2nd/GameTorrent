@@ -1,0 +1,118 @@
+# PostgreSQL 17 for the webui (users, sessions, requests, job history, feeds, providers, audit).
+# Same hardening pattern as the webui: non-root, read-only root filesystem, no capabilities,
+# no service-account token, image pinned by digest, resource limits.
+#
+# StatefulSet rather than Deployment: it gets a stable identity and its own volume claim
+# (volumeClaimTemplates), and a StatefulSet never runs two copies of the same ordinal at once,
+# so two Postgres processes can never open the same data directory.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: gametorrent
+  labels:
+    app: postgres
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      automountServiceAccountToken: false # Postgres never calls the k8s API
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 70 # the `postgres` user in the alpine image
+        runAsGroup: 70
+        fsGroup: 70
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        # local-path volumes are created root-owned; Postgres refuses a data dir it doesn't own
+        # or that others can read. Same idea as the webui's fix-volume-ownership.
+        - name: fix-volume-ownership
+          image: busybox:1.36@sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662
+          command: ["sh", "-c", "chown 70:70 /var/lib/postgresql/data && chmod 700 /var/lib/postgresql/data"]
+          securityContext:
+            runAsUser: 0
+            runAsNonRoot: false
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+              add: [CHOWN, FOWNER] # exactly what chown/chmod of someone else's dir needs
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/postgresql/data }
+      containers:
+        - name: postgres
+          image: postgres@sha256:266d3c257594e195b309ae9d1805e54c788f1d7b375f56bf6c367aac6c917e7b # 17.11-alpine
+          env:
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata # a subdirectory, so initdb gets an empty dir
+            - name: POSTGRES_INITDB_ARGS
+              # Passwords over the network are checked with SCRAM; the local socket (only reachable
+              # with `kubectl exec`, i.e. as a cluster admin anyway) trusts the OS user.
+              value: "--auth-host=scram-sha-256 --auth-local=trust"
+            - name: POSTGRES_HOST_AUTH_METHOD
+              value: scram-sha-256
+          envFrom:
+            - secretRef:
+                name: postgres-credentials # POSTGRES_PASSWORD, GT_OWNER_PASSWORD, GT_APP_PASSWORD
+          ports:
+            - containerPort: 5432
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+            # containerd's default AppArmor profile (cri-containerd.apparmor.d) blocks Postgres's own processes
+            # from signalling each other inside the container (kernel log: apparmor="DENIED" operation="signal"
+            # comm="postgres" peer="cri-containerd.apparmor.d//&unconfined"; thousands per day). Harmless while the
+            # database runs cleanly, FATAL after an unclean stop: crash recovery asks the checkpointer to finish via
+            # SIGINT, gets EPERM ("could not signal for checkpoint: Permission denied") and restarts forever.
+            # That took the webui down for 19 h on 2026-11-13 (see docs/DEBUG.md Phase S). Everything else that
+            # confines this pod stays: non-root uid 70, no capabilities, read-only root, seccomp RuntimeDefault.
+            appArmorProfile:
+              type: Unconfined
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 384Mi
+          readinessProbe:
+            exec: { command: ["pg_isready", "-U", "postgres", "-h", "127.0.0.1"] }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            exec: { command: ["pg_isready", "-U", "postgres", "-h", "127.0.0.1"] }
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            failureThreshold: 3
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/postgresql/data }
+            - { name: run, mountPath: /var/run/postgresql }  # unix socket + lock file
+            - { name: tmp, mountPath: /tmp }
+            - { name: init, mountPath: /docker-entrypoint-initdb.d/10-gametorrent-roles.sh, subPath: 10-gametorrent-roles.sh }
+            - { name: init, mountPath: /etc/gametorrent/init-roles.sql, subPath: init-roles.sql }
+      volumes:
+        - { name: run, emptyDir: { medium: Memory, sizeLimit: 16Mi } }
+        - { name: tmp, emptyDir: { sizeLimit: 256Mi } }
+        - name: init
+          configMap:
+            name: postgres-init
+            defaultMode: 0555
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: [ReadWriteOnce]
+        storageClassName: local-path
+        resources:
+          requests:
+            storage: 2Gi

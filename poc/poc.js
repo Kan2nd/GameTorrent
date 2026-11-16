@@ -55,6 +55,7 @@ function parseArgs(argv) {
       case '--skip-scan': args.skipScan = true; break;
       case '--require-scan': args.requireScan = true; break;
       case '--no-vt': args.noVt = true; break;
+      case '--help': case '-h': args.help = true; break;
       default:
         console.warn(`Unknown arg: ${a}`);
     }
@@ -81,6 +82,12 @@ function buildJob(args) {
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
+  if (args.help) {
+    // The usage text is this file's own header comment — one source of truth.
+    const header = require('fs').readFileSync(__filename, 'utf8').match(/\/\*\*([\s\S]*?)\*\//)[1];
+    console.log(header.split('\n').map((l) => l.replace(/^ \* ?/, '')).join('\n').trim());
+    return;
+  }
   const job = buildJob(args);
 
   const emitter = new EventEmitter();

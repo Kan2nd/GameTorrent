@@ -1,0 +1,6 @@
+# Applied by hand, same pattern as ../namespace.yaml (gametorrent) — NOT listed in
+# kustomization.yaml, so Argo CD's prune can never consider deleting it.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: observability

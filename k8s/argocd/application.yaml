@@ -1,0 +1,34 @@
+# Apply this ONCE, after Argo CD itself is installed (cicd/ansible/k3s-playbook.yml does that
+# part): kubectl apply -f k8s/argocd/application.yaml
+#
+# From here on, THIS is the GitOps part — Argo CD polls this repo's `main` branch (default
+# every 3 minutes, see argocd-cm's timeout.reconciliation to change it) and reconciles
+# k8s/webui/ against the live cluster. This is what replaces Komodo's Stack + webhook for the
+# k3s deployment.
+#
+# Side benefit over the Docker/Komodo setup: polling needs NO public webhook URL at all — this
+# is the "closes C2 entirely instead of narrowing it" option mentioned in log/C2. If a faster
+# sync is wanted, Argo CD also supports a webhook, but start without one; add it later only if
+# the 3-minute default is genuinely too slow, and if you do, reuse the same pattern as
+# docker/webhook-proxy/ (one exact path allowed, everything else 404) rather than exposing
+# Argo CD's own API.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: gametorrent-webui
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://gitlab.com/kannguyen3105/gametorrent.git
+    targetRevision: main
+    path: k8s/webui
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: gametorrent
+  syncPolicy:
+    automated:
+      prune: true    # removing a resource from k8s/webui/ deletes it from the cluster too
+      selfHeal: true  # a manual kubectl edit on the live cluster gets reverted back to what git says
+    syncOptions:
+      - CreateNamespace=false # namespace.yaml / the ansible role creates it; keep that explicit

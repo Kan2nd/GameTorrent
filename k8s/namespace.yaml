@@ -1,0 +1,7 @@
+# Applied once, by hand or by the k3s ansible role (which already creates this
+# namespace as part of bootstrap) — not part of the Argo CD-managed Application,
+# since Argo CD needs the namespace to exist before it can sync into it.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: gametorrent

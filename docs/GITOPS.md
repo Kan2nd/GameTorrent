@@ -1,9 +1,21 @@
 # GitOps deployment (Komodo)
 
-**Status: live.** `gametorrent-webui` on `kan2server` is deployed and
-redeployed through Komodo, not manual `docker build`/`docker run` over SSH.
-This doc describes the actual working setup — what it took to get there,
-including two real bugs hit along the way — not just the original plan.
+**Status: fully retired (2026-10-13).** First `gametorrent-webui` moved to
+Argo CD on k3s (2026-10-10), then Jackett and Uptime Kuma followed
+(2026-10-13, see `docs/K8S_MIGRATION.md` Phase 5) — at which point nothing
+was left for Komodo to deploy, so it was stopped entirely:
+`docker compose -p komodo down` (containers removed; its Postgres/FerretDB/
+keys volumes were kept, untouched, in case that data's ever wanted again).
+The GitLab webhook, Cloudflare tunnel, and webhook-only proxy described in
+§6 below were already deleted/stopped earlier (see `docker/host/README.md`).
+This doc's content is kept as reference — the FerretDB workaround, the
+Variable/Stack config gotchas, the webhook bugs — in case something like
+Komodo is useful again later, not because Komodo itself might come back
+for this project.
+
+Everything past this point describes that retired setup as it actually
+ran, including two real bugs hit along the way — kept for the record,
+not current operating instructions for `gametorrent-webui`.
 
 Why not Argo CD: it's a Kubernetes controller, and this project deliberately
 dropped Kubernetes for plain Docker (the second homelab VM once earmarked
@@ -62,7 +74,7 @@ empty value anyway — mark it **not secret** and the problem disappears.
 ## 4. The Stack
 
 `cicd/gitops/stacks.toml` declares `gametorrent-webui` as a git-backed
-Stack pointing at this repo's `webui/docker-compose.yml`. Two config
+Stack pointing at this repo's `docker/webui-compose.yml`. Two config
 fields are load-bearing and easy to miss:
 
 ```toml
@@ -70,7 +82,7 @@ run_build = true
 auto_pull = false
 ```
 
-This project has no image registry — `webui/docker-compose.yml` only has
+This project has no image registry — `docker/webui-compose.yml` only has
 a local `build:` context. Komodo's default assumes a registry image and
 runs `docker compose pull` before `up`; without a registry, that fails
 with `"repository does not exist"`, **even after `run_build = true`
@@ -84,7 +96,7 @@ Deploying for the first time hit one more expected snag: the container
 name `gametorrent-webui` was still held by the old manually-`docker run`
 container from before Komodo existed. Komodo can't reuse a name it didn't
 create. Fix: `docker rm -f gametorrent-webui` on the host once, then
-redeploy — safe because `webui/docker-compose.yml` declares its volumes
+redeploy — safe because `docker/webui-compose.yml` declares its volumes
 `external: true`, so the existing `gametorrent-webui-data`/`-downloads`/
 `-roms` volumes (and all their data) are untouched; only the container
 itself gets replaced.
@@ -107,12 +119,21 @@ LAN address like `<vm-ip>` directly. Solution: a Cloudflare quick
 tunnel.
 
 ```bash
-# on kan2server — installs cloudflared and runs it as a systemd service
-# pointed at Komodo Core, giving a public https://*.trycloudflare.com URL
+# on kan2server — installs cloudflared and runs it as a systemd service,
+# giving a public https://*.trycloudflare.com URL
 curl -sSL -o /tmp/cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
 sudo dpkg -i /tmp/cloudflared.deb
-# then a systemd unit running: cloudflared tunnel --url http://localhost:9120
+# then the unit in docker/host/: cloudflared tunnel --no-autoupdate --url http://localhost:9180
 ```
+
+**Update (2026-10-01): the tunnel no longer points at Komodo directly.** It used
+to be `--url http://localhost:9120`, which published Komodo's *entire* UI and API
+to the internet (and Komodo controls Docker, i.e. root on the VM). It now points
+at a webhook-only Caddy proxy (`docker/webhook-proxy/`, bound to
+`127.0.0.1:9180`) that forwards exactly `POST /listener/gitlab/stack/gametorrent-webui/deploy`
+to Komodo and returns 404 for everything else. A watchdog timer restarts the
+tunnel when Cloudflare drops it and records the current URL in
+`/etc/komodo/tunnel-url`. Full procedure: `docs/CLOUDFLARE_TUNNEL.md`.
 
 **Caveat, since there's no domain yet (free quick tunnel, not a named
 one):** the public URL is random and changes every time the `cloudflared`

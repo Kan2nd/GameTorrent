@@ -1,0 +1,13 @@
+# In-cluster address: http://uptime-kuma:3001. External access (LAN/Tailscale) goes through the
+# Deployment's hostPort, same as the webui.
+apiVersion: v1
+kind: Service
+metadata:
+  name: uptime-kuma
+  namespace: gametorrent
+spec:
+  selector:
+    app: uptime-kuma
+  ports:
+    - port: 3001
+      targetPort: 3001

@@ -660,6 +660,7 @@ main h3:first-child { margin-top: 0; }
 .status-done { color: var(--green); background: #06210f; box-shadow: 0 -2px 0 0 #1f8f52, 0 2px 0 0 #1f8f52, -2px 0 0 0 #1f8f52, 2px 0 0 0 #1f8f52; }
 .status-error { color: var(--red); background: #2a0b16; box-shadow: 0 -2px 0 0 #a3283f, 0 2px 0 0 #a3283f, -2px 0 0 0 #a3283f, 2px 0 0 0 #a3283f; }
 .status-available { color: var(--cyan); }
+.status-pending { animation: blink 1.2s steps(1) infinite; }
 
 /* --- Discover (provider sections) --- */
 
@@ -815,6 +816,7 @@ main h3:first-child { margin-top: 0; }
 .modal-content p { margin: 0; }
 .modal-content label { display: flex; align-items: center; font-size: 1.15rem; }
 .modal-content label:has(input[type="text"]),
+.modal-content label:has(input[type="password"]),
 .modal-content label:has(input[type="url"]),
 .modal-content label:has(select) {
   flex-direction: column;
@@ -850,4 +852,68 @@ main h3:first-child { margin-top: 0; }
   .tab-btn .sprite { width: 1.3rem; height: 1.3rem; }
   .tab-badge { font-size: 0.5rem; }
   .login-card { padding: 22px 18px; }
+}
+
+/* Controls only an admin can use; the server enforces this too (requireAdmin). */
+body:not(.is-admin) .admin-only { display: none !important; }
+
+/* admin: name the console of an "unknown" download */
+.platform-pick { width: 100%; padding: 6px 8px; font: inherit; color: var(--text, inherit); background: transparent; border: 1px solid var(--border, #555); border-radius: 4px; }
+
+/* Library search / console chips / sort */
+.library-toolbar { margin: 4px 0 16px; }
+.library-toolbar-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; margin: 0 4px 12px; }
+.library-toolbar-row input[type="search"] { flex: 1 1 260px; min-width: 0; }
+.library-toolbar-row select { flex: 0 0 auto; }
+
+/* Search tab: "Looking for" picks and the provider editor */
+.kind-bar { margin: 6px 4px 14px; }
+.kind-chips { display: flex; flex-direction: column; gap: 10px; margin-top: 8px; align-items: flex-start; }
+.kind-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+.kind-title { min-width: 7.5em; }
+.provider-edit { flex: 1; flex-wrap: wrap; }
+
+/* Account box: labels above their fields, a hint under the field, sections with room to breathe, buttons that wrap
+   instead of running out of the box (they used to overflow on a phone). */
+.account-modal { width: min(440px, calc(100% - 16px)); }
+.modal-content .field { display: flex; flex-direction: column; align-items: stretch; gap: 6px; color: var(--text); font-size: 1.15rem; }
+.modal-content .field input { margin: 0; width: 100%; min-width: 0; }
+.field-hint { color: var(--muted); font-size: 1rem; line-height: 1.35; }
+.modal-section { display: flex; flex-direction: column; gap: 12px; align-items: stretch; }
+.modal-section + .modal-section { border-top: 2px dashed var(--line); padding-top: 16px; }
+.modal-section h3 { margin: 0; font-size: 0.7rem; color: var(--cyan); }
+.modal-section > .ghost-btn { align-self: flex-start; }
+.ok { color: var(--green); margin: 0; }
+.modal-actions { flex-wrap: wrap; }
+@media (max-width: 430px) {
+  .modal { padding: 10px; }
+  .modal-content { padding: 20px 16px; }
+  .account-modal .modal-actions button, .modal-section > .ghost-btn { flex: 1 1 100%; align-self: stretch; }
+  .account-modal .modal-actions { flex-direction: column-reverse; }   /* the main action on top, within thumb reach */
+}
+
+/* --- Phones: a header that reads in order (logo + account, then the tabs across the full width) and tables that
+       become stacked cards instead of scrolling sideways with their buttons off screen --- */
+@media (max-width: 720px) {
+  .logo { order: 1; margin-right: auto; }
+  #accountBtn { order: 2; }
+  #logoutBtn { order: 3; }
+  .tabs { order: 4; flex: 1 1 100%; flex-wrap: nowrap; justify-content: space-between; gap: 2px; }
+  .tab-btn { flex: 1 1 0; justify-content: center; margin: 4px 2px; min-width: 0; }
+
+  .table-scroll { overflow-x: visible; padding: 4px 0; }
+  .data-table.stack-on-phone, .stack-on-phone tbody, .stack-on-phone tr, .stack-on-phone td { display: block; width: 100%; }
+  .stack-on-phone thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }   /* hidden, still read by screen readers */
+  .stack-on-phone tbody tr { padding: 8px 4px 10px; border-bottom: 4px solid #000; }
+  .stack-on-phone td { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 4px 12px; padding: 5px 10px; border-bottom: 0; text-align: right; overflow-wrap: anywhere; }
+  .stack-on-phone td::before { content: attr(data-label); flex: 0 0 auto; font-family: var(--pixel); font-size: 0.55rem; text-transform: uppercase; color: var(--yellow); text-align: left; }
+  .stack-on-phone td[data-label=""]::before { content: none; }
+  .stack-on-phone td[data-label=""] { justify-content: flex-start; gap: 8px; padding-top: 10px; }
+  .stack-on-phone td[data-label=""] > button { flex: 1 1 auto; margin: 0; }
+  .stack-on-phone td:first-child { font-size: 1.35rem; }
+}
+@media (max-width: 430px) {
+  .topbar { gap: 6px 10px; padding: 10px 12px 12px; }
+  #accountBtn, #logoutBtn { font-size: 0; gap: 0; padding: 9px 10px; }
+  #accountBtn .sprite, #logoutBtn .sprite { width: 1.3rem; height: 1.3rem; }   /* icon-only, like the tabs (labels stay for screen readers) */
 }

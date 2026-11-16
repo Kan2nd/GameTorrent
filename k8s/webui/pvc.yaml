@@ -1,0 +1,60 @@
+# Storage for the webui app, translated 1:1 from the named Docker volumes in
+# ../../docker/webui-compose.yml. `storageClassName: local-path` is k3s's
+# built-in default provisioner — fine for a single node, but note what it
+# actually does: it creates a plain hostPath directory under
+# /var/lib/rancher/k3s/storage/ on THIS node with NO quota enforcement.
+# The sizes below are requests/documentation, not hard caps — a runaway
+# download can still fill the real disk past these numbers. Watch `df -h /`
+# on the VM the same way the Docker-era backup/watchdog setup does
+# (docker/host/), not just these PVC specs.
+#
+# Single-node only: these PVCs cannot move with the pod to another node.
+# That's an accepted limitation here (the Docker deployment has the exact
+# same constraint — everything is on kan2server), not a new one from k8s.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: webui-data
+  namespace: gametorrent
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: webui-downloads
+  namespace: gametorrent
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 8Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: webui-roms
+  namespace: gametorrent
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 12Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: webui-clamav-db
+  namespace: gametorrent
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 1Gi

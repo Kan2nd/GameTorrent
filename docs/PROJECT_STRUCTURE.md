@@ -41,32 +41,65 @@ Project GameTorrent/
 │   ├── pipeline.js           # shared logic — no CLI or HTTP code in here
 │   └── poc.js                # CLI: parses argv, wires console output, calls pipeline.js
 ├── webui/                    # browser dashboard over the same pipeline.js
-│   ├── server.js             # Express app: session auth + REST API
+│   ├── server.js             # Express app: session auth + REST API (async, central error handler)
+│   ├── db/
+│   │   ├── index.js          # pg connection pool (gt_app), tx() helper
+│   │   ├── migrate.js        # migrations as gt_owner + one-time import of the old JSON files (initContainer)
+│   │   └── migrations/001_init.sql  # users, sessions, game_requests, download_jobs, game_stats, feeds, providers, audit_log
 │   ├── lib/
-│   │   ├── auth.js           # login check & multi-user roles (reads data/users.json, hashes passwords)
+│   │   ├── auth.js           # accounts in Postgres: login, per-request user refresh, sign-up, admin user management, last-admin guard
+│   │   ├── passwords.js      # scrypt hashing (params stored in the hash), password policy
+│   │   ├── sessionStore.js   # express-session store on the `sessions` table
+│   │   ├── secretBox.js      # AES-256-GCM for the Jackett API key at rest
+│   │   ├── errors.js         # HttpError: messages safe to show users
 │   │   ├── downloadManager.js  # in-memory job tracking + JSON history
 │   │   ├── feeds.js          # custom feed URLs, schema-validated on add
 │   │   ├── providers.js      # Jackett provider search (see docs/WEBUI.md)
 │   │   ├── coverArt.js       # keyless box-art lookup (libretro) + optional RAWG fallback
 │   │   ├── platformDetect.js # which console a search result is for, before downloading (docs/WEBUI.md)
 │   │   ├── stats.js          # download counter tracking
-│   │   └── rateLimit.js      # anti-bot rate limiting (5 downloads/min per IP)
-│   ├── public/                # login.html, index.html, app.js, style.css (8-bit theme),
+│   │   ├── rateLimit.js      # anti-bot rate limiting (5 downloads/min per IP) + failed-login limiter (device cookies, can't lock out the real user)
+│   │   ├── audit.js          # append-only JSON-lines audit trail (data/audit.log, also stdout → Loki)
+│   │   ├── paths.js          # where state lives (webui/data; GT_DATA_DIR overrides it for tests)
+│   │   └── requests.js       # standard users' game requests — admin approves/rejects (data/requests.json)
+│   ├── public/                # login.html + login.js, index.html, app.js, style.css (8-bit theme),
 │   │                          #   sprites.js (pixel-art icons/logo), favicon.svg, fonts/ (self-hosted)
-│   ├── data/                  # users.json, stats.json, feeds.json, downloads.json, providers.json (gitignored, runtime state)
-│   └── docker-compose.yml    # deploy target — see docs/GITOPS.md
+│   └── data/                  # cover-art cache; plus the pre-2026-11 JSON files, kept read-only as a rollback copy (gitignored)
+├── docker/                    # RETIRED for gametorrent-webui (2026-10-10, see docs/K8S_MIGRATION.md) — kept for
+│   │                           #   poc-compose.yml and as Komodo/Jackett/Kuma reference; see its own README
+│   ├── webui-compose.yml     # moved from webui/docker-compose.yml (2026-10) — no longer deployed, see docs/GITOPS.md's status note
+│   ├── poc-compose.yml       # moved from cicd/deploy/ — CLI image deploy target (disabled CI job), unaffected by the k3s move
+│   └── host/                  # kan2server's own files: the nightly backup job + the host firewall script (tunnel unit/watchdog retired, see its README)
+├── k8s/                       # LIVE — everything that runs on kan2server; see its own README (has a runtime diagram) + docs/K8S_MIGRATION.md
+│   ├── namespace.yaml        # the `gametorrent` namespace
+│   ├── webui/                 # Deployment/Service/PVCs/Secret-template for the app, 1:1 from docker/webui-compose.yml
+│   ├── jackett/               # LIVE (cut over 2026-10-13): Jackett off `docker run`, same /config data — s6-overlay starts as root, but with only CHOWN/SETUID/SETGID (K8S_MIGRATION.md Phase 8)
+│   ├── uptime-kuma/           # LIVE (cut over 2026-10-13): Uptime Kuma 1.23.17, same SQLite data — uid 1000, all capabilities dropped (Phase 8)
+│   ├── network-policies/      # LIVE: default-deny in gametorrent + explicit allows; argocd isolated from other namespaces
+│   ├── metrics-server/        # LIVE: our own copy (v0.8.1) replacing k3s's bundled one — powers `kubectl top`
+│   ├── observability/         # LIVE (Argo CD-managed since 2026-11-05): Loki + Alloy (logs), Prometheus + kube-state-metrics (metrics), Grafana + a git-managed dashboard — see docs/TUTORIALS.md §1, §4
+│   └── argocd/                # one Application per folder above — all six applied
 ├── catalog/
 │   ├── catalog.schema.json   # JSON Schema every catalog/feed entry must satisfy
 │   └── catalog.json          # default bundled entries (2 fully verified, 2 placeholder)
 ├── config/
 │   └── emulators.json        # per-platform emulator CLI templates (RetroArch, etc.)
-├── Dockerfile                 # node:20-bookworm-slim image for poc/ — see §5 for why not Alpine
+├── Dockerfile                 # node:20-bookworm-slim (digest-pinned) image for poc/ — see §5 for why not Alpine
 ├── .dockerignore
+├── .trivyignore               # the ONLY accepted vulnerability risks — each with reason, evidence, expiry
+├── .gitattributes             # keeps VM-side scripts/units LF even on Windows checkouts
 ├── cicd/                      # everything CI/CD-related lives here, not at repo root
-│   ├── .gitlab-ci.yml         # the pipeline itself — see §4
+│   ├── .gitlab-ci.yml         # the pipeline itself (all security gates blocking) — see docs/CI_CD.md
 │   ├── package.json / scripts/validate-catalog.js   # catalog schema validation tooling
-│   ├── ansible/                # installs Docker Engine + Compose on a target host
-│   ├── deploy/docker-compose.yml   # the poc CLI's Docker Compose deploy target
+│   ├── tests/security-selftest.js  # regression tests for the audit fixes (path traversal, SSRF, zip symlinks)
+│   ├── tests/api-selftest.js       # throwaway Postgres + real webui, attacks it over HTTP (2026-11 audit fixes)
+│   ├── tests/search-selftest.js    # typo-tolerant matcher (webui/public/fuzzy.js) + search widening, no DB
+│   ├── tests/manifest-selftest.js  # static checks on k8s/: every image pinned by digest, no :latest, capability allowlist
+│   ├── scripts/pin-webui-image.js  # pins the webui image digest in k8s/webui/kustomization.yaml (docs/CI_CD.md "Releasing")
+│   ├── ansible/
+│   │   ├── playbook.yml        # installs Docker Engine + Compose on [docker_hosts] — untouched by the k3s work below
+│   │   ├── k3s-playbook.yml    # NEW, separate playbook: installs k3s + Argo CD on [k3s_hosts] — see docs/K8S_MIGRATION.md
+│   │   └── roles/{common,k3s}/ # common = Docker (existing); k3s = NEW, not yet run against a real host
 │   └── gitops/                 # Komodo bootstrap + gametorrent-webui Stack-as-code — see docs/GITOPS.md
 ├── docs/
 │   ├── ARCHITECTURE.md        # original Phase 1 stack rationale
@@ -74,6 +107,7 @@ Project GameTorrent/
 │   ├── GITOPS.md              # Komodo-based GitOps deploy for webui
 │   ├── CLOUDFLARE_TUNNEL.md   # no-domain Cloudflare quick-tunnel setup guide
 │   ├── GIT_WORKFLOW.md        # dev/main rules + how to never hit MR conflicts (AI + humans)
+│   ├── K8S_MIGRATION.md       # the phased Docker -> k3s plan (status: Phase 0 done, nothing live yet)
 │   ├── PROJECT_STRUCTURE.md   # this file
 │   ├── POC.md                 # Phase 1 CLI setup (was poc/README.md)
 │   ├── WEBUI.md                # web dashboard setup + API + Jackett search (was webui/README.md)
@@ -182,37 +216,45 @@ better bets for those, not yet integrated.
 
 ## 4. CI/CD (`cicd/`)
 
-GitLab CI config lives at `cicd/.gitlab-ci.yml`, not the repo root — the
-GitLab project setting **CI/CD → General pipelines → CI/CD configuration
-file** needs to point there once/if this repo is pushed to GitLab (it
-currently has no remote — see §6).
+GitLab CI config lives at `cicd/.gitlab-ci.yml`, not the repo root. The
+GitLab project's **CI/CD → General pipelines → CI/CD configuration file**
+setting points there (as of the 2026-10 audit — it sat unset for a while
+before that, see `log/H1-ci-pipeline-not-running.md` for the full story of
+why that alone made every gate below meaningless until it was fixed).
 
-Runs only on: an MR, or a push to `dev`/`main` (never on raw `feature/*`
-pushes).
+Runs on: an MR, or a push to `dev`/`main` (never on raw `feature/*` pushes).
+**"Pipelines must succeed" is on** — an MR into `main` can't merge on a red
+pipeline, and merging into `main` is what Argo CD picks up and syncs to the
+k3s cluster (polling, see docs/K8S_MIGRATION.md — this replaced the Komodo
+webhook deploy described below once `gametorrent-webui` moved off Docker),
+so every gate below sits in front of production.
 
 | Stage | Job | State |
 |---|---|---|
-| validate | `validate:catalog`, `validate:poc-syntax` | active |
-| sast | `semgrep-sast` | active, report-only |
-| dependency-scan | `.trivy-dependency-scan` | disabled (leading `.`) |
-| build | `build:poc`, `.build-image` | first active, second disabled |
-| image-scan | `.trivy-image-scan` | disabled |
-| deploy | `deploy:tauri-placeholder`, `.deploy:docker-compose` | first is a no-op until Phase 2 desktop app exists; second disabled, needs `SSH_PRIVATE_KEY`/`DEPLOY_HOST`/`DEPLOY_USER`/`REGISTRY` CI variables and a registry to push to (neither exists yet — `.build-image` only saves a local tarball today) |
+| validate | `validate:catalog`, `validate:syntax` | active, blocking |
+| test | `test:security` | active, blocking — regression tests for the audit fixes |
+| sast | `secret-scan` (gitleaks, full history), `semgrep-sast` (`poc/` + `webui/`) | active, blocking |
+| dependency-scan | `trivy-fs` | active, blocking — accepted risks go in `.trivyignore`, not `allow_failure` |
+| build | `build-image` | active — builds `webui/Dockerfile`, the image actually deployed |
+| image-scan | `trivy-image` | active, blocking, plus a CycloneDX SBOM artifact |
+| deploy | `deploy:tauri-placeholder`, `.deploy:docker-compose` | first is a no-op until Phase 2 desktop app exists; second disabled, needs `SSH_PRIVATE_KEY`/`DEPLOY_HOST`/`DEPLOY_USER`/`REGISTRY` CI variables and a registry to push to |
 
-This is where the now-merged former `devsecops-pipeline` project's security
-gates and Docker deploy tooling (`cicd/ansible/`, `cicd/deploy/`) ended up —
-see `docs/CI_CD.md` for the full history of that merge and
-`docs/devsecops-notes/` for the original project's tutorial notes (dropped
-Kubernetes and DVWA along the way; kept as reference only).
+See `docs/CI_CD.md` for the full stage-by-stage detail and how to run the
+same pinned scanners locally. This is also where the now-merged former
+`devsecops-pipeline` project's tooling (`cicd/ansible/`) ended up — see that
+doc for the merge history and `docs/devsecops-notes/` for the original
+project's tutorial notes (dropped Kubernetes and DVWA along the way; kept as
+reference only — though Kubernetes is back under consideration, this time
+alongside Docker rather than instead of it, see `docs/K8S_MIGRATION.md`).
 
 ## 5. What's actually deployed right now
 
 Everything below runs on **`kan2server`** (`<vm-ip>`), a single
 Ubuntu Server VM on the homelab LAN, reached via key-based SSH
-(`<ssh-user>@<vm-ip>`).
+(`<ssh-user>@<vm-ip>`, passwordless sudo).
 
 **`gametorrent-webui` is now deployed via Komodo** (see `docs/GITOPS.md`),
-not by hand — it builds and runs `webui/docker-compose.yml` cloned fresh
+not by hand — it builds and runs `docker/webui-compose.yml` cloned fresh
 from `kannguyen3105/gametorrent`'s `main` branch on GitLab. Redeploying
 after a merge to `main` is a click in Komodo's UI (or the `DeployStack`
 API — see below), not an SSH session.
@@ -237,13 +279,13 @@ real download inside the built container, not by any static check —
 worth remembering if either Dockerfile ever gets "optimized" back to
 Alpine for size.
 
-**Network / who can reach it:** `<vm-subnet>` is VMware's VMnet8 (NAT)
+**Network / who can reach it:** `192.0.2.0/24` is VMware's VMnet8 (NAT)
 network, visible only to the Windows host — not to phones or other devices
 on the home Wi-Fi (`192.168.1.x`). Off-host access goes through Tailscale
 (`kan2server` = `<tailscale-ip>`); details and the alternatives are in
 `docs/WEBUI.md` → "Reaching it from a phone or another device".
 
-A second VM, `<ssh-user-2>@<vm2-ip>`, was originally meant to be a
+A second VM, `kan2nd@<vm-ip>`, was originally meant to be a
 Kubernetes control-plane node before the project dropped k8s in favor of
 plain Docker. It's currently powered off and unused.
 
@@ -276,9 +318,11 @@ returns a JWT (also cached in the browser's `localStorage` under
 no `{type, params}` wrapper — that's the Rust client's shape, not the wire
 format).
 
-**A GitLab webhook is live and confirmed working** (via a Cloudflare
+**A GitLab webhook was live and confirmed working** (via a Cloudflare
 tunnel — `gitlab.com` can't reach a private LAN address directly, see
-`docs/GITOPS.md`). A second real bug hit getting there: a Stack's webhook
+`docs/GITOPS.md`) — retired 2026-10-10 along with the rest of the Komodo
+deploy path for this app; kept below for the record. A second real bug
+hit getting there: a Stack's webhook
 runs `DeployStackIfChanged` by default, which compares a *cached*
 `latest_hash` and can silently no-op on stale data if a genuine new
 commit lands between Komodo's poll cycles — no error, no deploy, nothing

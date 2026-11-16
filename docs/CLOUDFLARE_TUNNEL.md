@@ -1,5 +1,15 @@
 # Cloudflare quick tunnel + GitLab webhook: runbook (human or AI)
 
+**Retired 2026-10-10 — this whole setup is gone.** `gametorrent-webui` now
+deploys via Argo CD on k3s (pull-based polling, no public endpoint needed —
+see `docs/K8S_MIGRATION.md`), so the tunnel/proxy/webhook this runbook
+describes no longer exist: the GitLab webhook was deleted, the
+`cloudflared-komodo-tunnel`/`cloudflared-watchdog` services were
+stopped+disabled and their files removed (`docker/host/README.md`), and
+`docker/webhook-proxy/` is gone. Kept below as reference only, in case this
+pattern (tunnel -> narrow proxy -> internal service, see `log/C2`) is useful
+again for something else later.
+
 Follow this top to bottom and you can set up, check, and repair the deploy
 tunnel without any prior context. It assumes **no domain**, so it uses a free
 Cloudflare *quick tunnel*, whose URL is random and changes on restart. That is
@@ -13,13 +23,17 @@ Never print, log or commit them.
 
 ```
 merge to main -> GitLab webhook -> https://<random>.trycloudflare.com
-   -> Cloudflare -> cloudflared (systemd, on kan2server) -> localhost:9120
-   -> Komodo listener -> redeploys Stack "gametorrent-webui"
+   -> Cloudflare -> cloudflared (systemd, on kan2server) -> 127.0.0.1:9180
+   -> webhook-only proxy (Caddy) -> Komodo listener :9120 -> redeploys Stack "gametorrent-webui"
 ```
 
-Only Komodo's listener (port 9120) is exposed. The listener path is fixed:
-`/listener/gitlab/stack/gametorrent-webui/deploy`. The **secret token**
-(header `X-Gitlab-Token`) is what protects it.
+**The tunnel must point at the proxy on `:9180`, never straight at Komodo's
+`:9120`.** A quick tunnel forwards a whole port, so pointing it at `:9120`
+publishes Komodo's entire UI and API (Komodo controls Docker = root on the VM).
+The proxy (`docker/webhook-proxy/`) lets through exactly one request —
+`POST /listener/gitlab/stack/gametorrent-webui/deploy` — and answers 404 to
+everything else. That path's **secret token** (header `X-Gitlab-Token`) is then
+checked by Komodo itself. Komodo's UI stays reachable on the LAN/Tailscale at `:9120`.
 
 Symptom that means "run this runbook": a merge to `main` did not redeploy, or
 the user says the tunnel is down / gives a new `trycloudflare.com` URL.
@@ -28,9 +42,12 @@ the user says the tunnel is down / gives a new `trycloudflare.com` URL.
 
 | Thing | Value / where |
 |---|---|
-| VM | `<ssh-user>@<vm-ip>`, SSH key auth (details in the private `credentials.md`) |
-| Tunnel service | systemd unit `cloudflared-komodo-tunnel` |
-| Komodo listener | `http://localhost:9120` on the VM |
+| VM | `<ssh-user>@<vm-ip>`, SSH key auth, passwordless sudo (`credentials.md`) |
+| Tunnel service | systemd unit `cloudflared-komodo-tunnel` → `http://localhost:9180` |
+| Webhook proxy | container `komodo-webhook-proxy` on `127.0.0.1:9180` (`docker/webhook-proxy/`) |
+| Komodo listener | `core:9120` (reached by the proxy over Docker's `komodo_default` network) |
+| Tunnel watchdog | timer `cloudflared-watchdog` (every 5 min) — restarts a dead tunnel |
+| Current URL file | `/etc/komodo/tunnel-url` (kept up to date by the watchdog) |
 | GitLab project | `kannguyen3105/gametorrent` (URL-encoded: `kannguyen3105%2Fgametorrent`) |
 | Webhook id | `<webhook-id>` |
 | Webhook secret | `credentials.md`, line "Webhook secret" |
@@ -47,40 +64,39 @@ curl -sSL -o /tmp/cloudflared.deb \
 sudo dpkg -i /tmp/cloudflared.deb
 ```
 
-Create `/etc/systemd/system/cloudflared-komodo-tunnel.service`:
-
-```ini
-[Unit]
-Description=Cloudflare quick tunnel to Komodo listener
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-ExecStart=/usr/bin/cloudflared tunnel --no-autoupdate --url http://localhost:9120
-Restart=always
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-```
+Start the webhook-only proxy **first** (from a checkout of the repo on the VM):
 
 ```bash
+sudo mkdir -p /etc/komodo/webhook-proxy
+sudo cp docker/webhook-proxy/Caddyfile docker/webhook-proxy/compose.yaml /etc/komodo/webhook-proxy/
+cd /etc/komodo/webhook-proxy && sudo docker compose -p komodo-webhook-proxy up -d
+curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:9180/    # must print 404
+```
+
+Then install the tunnel unit (it points at `:9180`) plus the watchdog — all kept in
+`docker/host/` (see its README):
+
+```bash
+sudo cp -r docker/host/usr docker/host/etc /
+sudo chmod 750 /usr/local/bin/cloudflared-watchdog.sh /usr/local/bin/gametorrent-backup.sh
 sudo systemctl daemon-reload
-sudo systemctl enable --now cloudflared-komodo-tunnel
+sudo systemctl enable --now cloudflared-komodo-tunnel cloudflared-watchdog.timer gametorrent-backup.timer
 ```
 
 ## 3. Get the current tunnel URL (or a fresh one)
 
 ```bash
-ssh <ssh-user>@<vm-ip> "sudo systemctl is-active cloudflared-komodo-tunnel; \
-  sudo journalctl -u cloudflared-komodo-tunnel --no-pager | grep -o 'https://[a-z0-9-]*\.trycloudflare\.com' | tail -1"
+ssh <ssh-user>@<vm-ip> "cat /etc/komodo/tunnel-url; sudo journalctl -t cloudflared-watchdog -n 3 --no-pager"
 ```
+
+The watchdog checks every 5 minutes: if Cloudflare dropped the tunnel ("Tunnel not
+found") it restarts it, and it always writes the current URL to that file. If its log
+says *"tunnel URL is now … repoint the GitLab webhook"*, the URL changed: do step 4.
 
 Decide by what you see:
 
 - URL printed and no recent errors: candidate URL. Go to 5 (verify).
-- Journal shows `Unauthorized: Tunnel not found` (service still `active`): Cloudflare
-  deleted the quick tunnel. Restart it, then re-read the URL:
+- You don't want to wait for the watchdog: restart by hand, then re-read the URL:
   ```bash
   ssh <ssh-user>@<vm-ip> "sudo systemctl restart cloudflared-komodo-tunnel; sleep 8; \
     sudo journalctl -u cloudflared-komodo-tunnel --no-pager -n 30 | grep -o 'https://[a-z0-9-]*\.trycloudflare\.com' | tail -1"
@@ -113,7 +129,7 @@ Three traps that have already bitten this project:
 1. **Always resend `token` in the PUT.** A PUT with only `url` wipes the secret
    and Komodo then answers 401, so deploys silently stop.
 2. **Read the whole token file.** `gitlantoken.md` holds a token with a dotted
-   suffix (`glpat-....01.xxxx`). Extracting it with a `glpat-[A-Za-z0-9_-]*`
+   suffix (`glpat-<redacted>`). Extracting it with a `glpat-[A-Za-z0-9_-]*`
    regex cuts it at the dot and gives `401 Unauthorized`. Use `tr -d ' \r\n'`
    on the entire file as above.
 3. **Do not print the token or secret** (echo, `set -x`, error dumps). Print
@@ -135,7 +151,13 @@ curl -s -o /dev/null -w "%{http_code}\n" -X POST "$URL" \
 | 200 | tunnel + secret OK | done |
 | 401 | secret mismatch | recheck `SEC` in `credentials.md` / Komodo webhook secret, redo 4 |
 | 502/504, timeout, "internal error" | tunnel dead or wrong host | redo 3 |
-| 404 | wrong path/stack name | path must be exactly `/listener/gitlab/stack/gametorrent-webui/deploy` |
+| 404 | wrong path/stack name, or not a POST | the proxy only forwards `POST /listener/gitlab/stack/gametorrent-webui/deploy` |
+
+Also confirm Komodo is **not** public — that's what the proxy is for:
+
+```bash
+curl -s -o /dev/null -w "%{http_code}\n" "https://<HOST>/"   # must be 404, never the Komodo page
+```
 
 GitLab's own "Test -> Push events" button returns 422 for this project; use the
 curl above instead. Real proof is the next merge to `main` (GitLab -> Settings ->
@@ -165,8 +187,8 @@ project rule is: **commit and push `dev` only; the user reviews and merges to
 - **Stable URL:** needs a domain on Cloudflare DNS. Then use a named tunnel:
   `cloudflared tunnel login`, `cloudflared tunnel create gametorrent`,
   `cloudflared tunnel route dns gametorrent deploy.<domain>`, an ingress rule to
-  `http://localhost:9120`, and run `cloudflared tunnel run gametorrent`. The URL
-  never changes, so step 4 is done once.
+  `http://localhost:9180` (the proxy — still never `:9120` directly), and run
+  `cloudflared tunnel run gametorrent`. The URL never changes, so step 4 is done once.
 - **Quick tunnel guarantees:** none. It can vanish at any time.
 
 ## 8. Merge blocked by conflicts? (happened three times)
@@ -181,6 +203,8 @@ Cause: the MR squashes `dev`, so `dev` falls "N commits behind" `main`. Follow
 |---|---|
 | Is the tunnel service up? | `ssh <ssh-user>@<vm-ip> "systemctl is-active cloudflared-komodo-tunnel"` |
 | Restart tunnel | `ssh <ssh-user>@<vm-ip> "sudo systemctl restart cloudflared-komodo-tunnel"` |
-| Current URL | journalctl grep in step 3 |
+| Current URL | `ssh <ssh-user>@<vm-ip> "cat /etc/komodo/tunnel-url"` |
+| Watchdog history | `ssh <ssh-user>@<vm-ip> "sudo journalctl -t cloudflared-watchdog -n 10"` |
+| Proxy healthy? | `ssh <ssh-user>@<vm-ip> "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:9180/"` → `404` |
 | Update webhook | step 4 |
 | Verify | step 5 |

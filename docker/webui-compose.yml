@@ -28,8 +28,28 @@ services:
       - gametorrent-webui-data:/app/webui/data
       - gametorrent-downloads:/app/downloads
       - gametorrent-roms:/app/roms
+      # ClamAV's signature DB, writable so freshclam can update it under read_only below. A new
+      # named volume is seeded from the image's own DB on first use.
+      - gametorrent-clamav-db:/var/lib/clamav
+    # --- Hardening (see log/M3) ---
+    # The image runs as the unprivileged `node` user (webui/Dockerfile). On top of that:
+    read_only: true                      # the app can't modify its own code or the OS files
+    tmpfs:
+      - /tmp                             # scratch space for clamscan / webtorrent
+      - /var/log/clamav:uid=1000,gid=1000
+    cap_drop: [ ALL ]                    # a Node web app needs no Linux capabilities
+    security_opt: [ "no-new-privileges:true" ]   # nothing inside can gain privileges (setuid etc.)
+    mem_limit: 1536m                     # a runaway download/extraction can't eat the whole VM
+    pids_limit: 256
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:3000/login.html', (r) => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
 
 volumes:
+  gametorrent-clamav-db:
   gametorrent-webui-data:
     external: true
   gametorrent-downloads:

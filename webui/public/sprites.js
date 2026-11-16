@@ -170,8 +170,10 @@
   };
 
   function svg(name) {
+    // Own keys only: `name` can come from a data-sprite attribute, and an inherited key such as
+    // "constructor" must not resolve to something that isn't a sprite.
+    if (!Object.prototype.hasOwnProperty.call(SPRITES, name)) return '';
     var rows = SPRITES[name];
-    if (!rows) return '';
     var w = 0;
     rows.forEach(function (r) { if (r.length > w) w = r.length; });
     var h = rows.length;
@@ -201,6 +203,9 @@
   /** Fills every <... data-sprite="name"> under `scope` (default: the whole document). */
   function render(scope) {
     (scope || document).querySelectorAll('[data-sprite]').forEach(function (el) {
+      // Triaged false positive: the attribute is only a lookup key into the constant SPRITES table;
+      // the markup is built solely from constant pixel rows + PALETTE, never from the attribute text.
+      // nosemgrep: ajinabraham.njsscan.xss.xss_dom.dom_xss
       el.innerHTML = svg(el.getAttribute('data-sprite'));
     });
   }

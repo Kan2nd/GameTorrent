@@ -1,0 +1,30 @@
+# The actual boundary this closes: nothing in `gametorrent` (or kube-system, or anywhere else)
+# can open a connection INTO any Argo CD pod — including argocd-repo-server, which holds the
+# GitLab read_repository credential, and argocd-server, which holds the admin session/API.
+# That's the real "a compromised app pod can't escalate into the GitOps controller" boundary.
+#
+# Deliberately NOT a full default-deny + enumerated allow-list the way gametorrent's policies
+# are: Argo CD's own components (server <-> repo-server <-> application-controller <-> redis
+# <-> dex-server <-> notifications-controller, several ports each) aren't something this repo
+# installs or controls the exact wiring of — that's argoproj's own install manifest
+# (k8s/argocd's install.yaml comes straight from an upstream release URL, see
+# cicd/ansible/roles/k3s/tasks/main.yml). Getting one port wrong while trying to fully map that
+# mesh risks breaking Argo CD itself for a security property this narrower rule already
+# delivers. `from: [{podSelector: {}}]` with no namespaceSelector means "same namespace" in
+# Kubernetes NetworkPolicy semantics — so same-namespace traffic (Argo CD's own internal mesh,
+# whatever it actually is) stays completely unrestricted, while every other source is denied.
+#
+# Egress is intentionally left alone here — Argo CD needs to reach the k8s API, GitLab (to
+# clone this repo), and its own components, and mapping that fully is a separate, lower-value
+# piece of work than closing the ingress path attackers would actually use to escalate.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: isolate-from-other-namespaces
+  namespace: argocd
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector: {}

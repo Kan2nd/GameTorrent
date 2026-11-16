@@ -1,54 +1,38 @@
 'use strict';
 
-const fs = require('fs');
-const path = require('path');
+/** Per-game download counters, in the `game_stats` table (was data/stats.json). */
 
-const DATA_DIR = path.join(__dirname, '..', 'data');
-const STATS_PATH = path.join(DATA_DIR, 'stats.json');
+const db = require('../db');
 
-// Memory cache
-let stats = {};
-
-function loadStats() {
-  if (!fs.existsSync(STATS_PATH)) {
-    stats = {};
-    return;
-  }
-  try {
-    stats = JSON.parse(fs.readFileSync(STATS_PATH, 'utf8'));
-  } catch (err) {
-    console.error('Failed to load stats.json:', err.message);
-    stats = {};
-  }
+async function incrementDownload(platform, folder) {
+  await db.query(
+    `insert into game_stats (platform, folder, download_count) values ($1, $2, 1)
+     on conflict (platform, folder) do update set download_count = game_stats.download_count + 1`,
+    [String(platform), String(folder)],
+  );
 }
 
-function saveStats() {
-  fs.mkdirSync(DATA_DIR, { recursive: true });
-  fs.writeFileSync(STATS_PATH, JSON.stringify(stats, null, 2));
+/** { "platform/folder": count } for every game, in one query. */
+async function getAllCounts() {
+  const { rows } = await db.query('select platform, folder, download_count from game_stats');
+  const out = {};
+  for (const r of rows) out[`${r.platform}/${r.folder}`] = r.download_count;
+  return out;
 }
 
-function incrementDownload(platform, folder) {
-  const key = `${platform}/${folder}`;
-  if (!stats[key]) {
-    stats[key] = { downloadCount: 0 };
-  }
-  stats[key].downloadCount++;
-  saveStats();
+async function removeStats(platform, folder) {
+  await db.query('delete from game_stats where platform = $1 and folder = $2', [String(platform), String(folder)]);
 }
 
-function getDownloadCount(platform, folder) {
-  const key = `${platform}/${folder}`;
-  return stats[key] ? stats[key].downloadCount : 0;
+/** A game moved to another platform folder: carry its download counter along (merging if the target already has one). */
+async function movePlatform(oldPlatform, newPlatform, folder) {
+  await db.query(
+    `insert into game_stats (platform, folder, download_count)
+       select $2, folder, download_count from game_stats where platform = $1 and folder = $3
+     on conflict (platform, folder) do update set download_count = game_stats.download_count + excluded.download_count`,
+    [String(oldPlatform), String(newPlatform), String(folder)],
+  );
+  await removeStats(oldPlatform, folder);
 }
 
-function removeStats(platform, folder) {
-  const key = `${platform}/${folder}`;
-  if (stats[key]) {
-    delete stats[key];
-    saveStats();
-  }
-}
-
-loadStats();
-
-module.exports = { incrementDownload, getDownloadCount, removeStats };
+module.exports = { incrementDownload, getAllCounts, removeStats, movePlatform };
